@@ -1,0 +1,25 @@
+{
+  "name": "flux-lsp",
+  "version": "0.1.0",
+  "description": "Language Server Protocol implementation for FLUX",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "jest"
+  },
+  "contributes": {
+    "languages": [{
+      "id": "flux.md",
+      "aliases": ["FLUX Markdown", "flux"],
+      "extensions": [".flux.md"],
+      "filenames": ["FLUX"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "flux.md",
+      "scopeName": "source.flux.md",
+      "path": "./grammars/flux.tmLanguage.json"
+    }]
+  }
+}

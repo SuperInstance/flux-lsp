@@ -1,0 +1,579 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "FLUX Markdown",
+  "scopeName": "source.flux.md",
+  "patterns": [
+    { "include": "#frontmatter" },
+    { "include": "#section-headings" },
+    { "include": "#directives" },
+    { "include": "#code-blocks" },
+    { "include": "#markdown-elements" }
+  ],
+  "repository": {
+    "frontmatter": {
+      "patterns": [
+        {
+          "name": "meta.frontmatter.flux.md",
+          "begin": "^---\\s*$",
+          "end": "^---\\s*$",
+          "beginCaptures": { "0": { "name": "punctuation.definition.begin.frontmatter.flux.md" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.end.frontmatter.flux.md" } },
+          "patterns": [
+            {
+              "match": "^([a-zA-Z_][a-zA-Z0-9_-]*)(:)",
+              "captures": {
+                "1": { "name": "entity.other.attribute-name.yaml.flux.md" },
+                "2": { "name": "punctuation.separator.key-value.yaml.flux.md" }
+              }
+            },
+            {
+              "name": "constant.numeric.yaml.flux.md",
+              "match": "(?<=[\\s:])[+-]?(?:0x[0-9a-fA-F]+|\\d+\\.?\\d*)(?=[\\s,\\]\\n])"
+            },
+            {
+              "name": "constant.language.boolean.yaml.flux.md",
+              "match": "\\b(true|false|yes|no)\\b"
+            },
+            {
+              "name": "string.quoted.double.yaml.flux.md",
+              "begin": "\"",
+              "end": "\""
+            },
+            {
+              "name": "meta.brackets.square.yaml.flux.md",
+              "begin": "\\[",
+              "end": "\\]",
+              "captures": {
+                "0": { "name": "punctuation.definition.brackets.square.yaml.flux.md" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+
+    "section-headings": {
+      "patterns": [
+        {
+          "name": "entity.name.section.flux.md",
+          "match": "^(##)\\s+(fn|agent|tile|region|vocabulary|test)\\s*(:\\s*)(.+)?$",
+          "captures": {
+            "1": { "name": "punctuation.definition.heading.markdown.flux.md" },
+            "2": { "name": "keyword.declaration.section.flux.md" },
+            "3": { "name": "punctuation.separator.key-value.flux.md" },
+            "4": {
+              "name": "entity.name.function.flux.md",
+              "patterns": [
+                { "include": "#fn-signature" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "markup.heading.1.markdown.flux.md",
+          "match": "^(#)\\s+(.+)$",
+          "captures": {
+            "1": { "name": "punctuation.definition.heading.markdown.flux.md" },
+            "2": { "name": "entity.name.section.title.flux.md" }
+          }
+        },
+        {
+          "name": "markup.heading.3.markdown.flux.md",
+          "match": "^(#{3,6})\\s+(.+)$",
+          "captures": {
+            "1": { "name": "punctuation.definition.heading.markdown.flux.md" },
+            "2": { "name": "markup.heading.markdown.flux.md" }
+          }
+        }
+      ]
+    },
+
+    "fn-signature": {
+      "patterns": [
+        {
+          "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "entity.name.function.flux.md" }
+          }
+        },
+        {
+          "name": "punctuation.definition.parameters.begin.flux.md",
+          "match": "\\("
+        },
+        {
+          "name": "punctuation.definition.parameters.end.flux.md",
+          "match": "\\)"
+        },
+        {
+          "name": "variable.parameter.flux.md",
+          "match": "[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*:)"
+        },
+        {
+          "name": "punctuation.separator.type.annotation.flux.md",
+          "match": ":"
+        },
+        {
+          "name": "storage.type.flux.md",
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|void|Vec4|agent|tile)\\b"
+        },
+        {
+          "name": "keyword.control.arrow.flux.md",
+          "match": "->"
+        },
+        {
+          "name": "punctuation.separator.parameters.flux.md",
+          "match": ","
+        }
+      ]
+    },
+
+    "directives": {
+      "patterns": [
+        {
+          "name": "keyword.directive.flux.md",
+          "match": "^#!\\s*(capability|import|export|deprecated|experimental|require|feature|optimize|unsafe|test|bench)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.directive.flux.md" }
+          }
+        },
+        {
+          "name": "comment.line.directive.flux.md",
+          "match": "^#!\\w+.*$"
+        }
+      ]
+    },
+
+    "code-blocks": {
+      "patterns": [
+        {
+          "name": "meta.code-block.flux.flux.md",
+          "begin": "^(\\s*`{3,})\\s*(flux|fluxfn|flux-type)\\b",
+          "end": "^\\s*`{3,}\\s*$",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.begin.code-block.flux.md" },
+            "2": { "name": "entity.name.tag.code-block.flux.md" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.end.code-block.flux.md" }
+          },
+          "contentName": "source.flux.asm",
+          "patterns": [
+            { "include": "#flux-assembly" }
+          ]
+        },
+        {
+          "name": "meta.code-block.fir.flux.md",
+          "begin": "^(\\s*`{3,})\\s*(fir)\\b",
+          "end": "^\\s*`{3,}\\s*$",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.begin.code-block.flux.md" },
+            "2": { "name": "entity.name.tag.code-block.flux.md" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.end.code-block.flux.md" }
+          },
+          "contentName": "source.flux.fir",
+          "patterns": [
+            { "include": "#fir-ir" }
+          ]
+        },
+        {
+          "name": "meta.code-block.fluxvocab.flux.md",
+          "begin": "^(\\s*`{3,})\\s*(fluxvocab)\\b",
+          "end": "^\\s*`{3,}\\s*$",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.begin.code-block.flux.md" },
+            "2": { "name": "entity.name.tag.code-block.flux.md" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.end.code-block.flux.md" }
+          },
+          "contentName": "source.flux.vocab",
+          "patterns": [
+            { "include": "#flux-vocab" }
+          ]
+        },
+        {
+          "name": "meta.code-block.data.flux.md",
+          "begin": "^(\\s*`{3,})\\s*(json|yaml|yml|toml)\\b",
+          "end": "^\\s*`{3,}\\s*$",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.begin.code-block.flux.md" },
+            "2": { "name": "entity.name.tag.code-block.flux.md" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.end.code-block.flux.md" }
+          },
+          "patterns": [
+            { "include": "#data-block-content" }
+          ]
+        },
+        {
+          "name": "meta.code-block.native.flux.md",
+          "begin": "^(\\s*`{3,})\\s*(c|python|rust|bash|sh)\\b",
+          "end": "^\\s*`{3,}\\s*$",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.begin.code-block.flux.md" },
+            "2": { "name": "entity.name.tag.code-block.flux.md" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.end.code-block.flux.md" }
+          }
+        }
+      ]
+    },
+
+    "flux-assembly": {
+      "patterns": [
+        { "include": "#asm-comments" },
+        { "include": "#asm-labels" },
+        { "include": "#asm-instructions" },
+        { "include": "#asm-registers" },
+        { "include": "#asm-immediates" },
+        { "include": "#asm-strings" }
+      ]
+    },
+
+    "asm-comments": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.flux.asm",
+          "match": ";.*$"
+        },
+        {
+          "name": "comment.line.number-sign.flux.asm",
+          "match": "#[^!].*$"
+        }
+      ]
+    },
+
+    "asm-labels": {
+      "patterns": [
+        {
+          "name": "entity.name.label.flux.asm",
+          "match": "@[a-zA-Z_][a-zA-Z0-9_]*\\s*:"
+        },
+        {
+          "name": "variable.other.reference.label.flux.asm",
+          "match": "@[a-zA-Z_][a-zA-Z0-9_]*"
+        }
+      ]
+    },
+
+    "asm-instructions": {
+      "patterns": [
+        {
+          "name": "keyword.control.instruction.system.flux.asm",
+          "match": "\\b(HALT|NOP|RET|IRET|BRK|WFI|RESET|SYN)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.single-reg.flux.asm",
+          "match": "\\b(INC|DEC|NOT|NEG|PUSH|POP|CONF_LD|CONF_ST)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.immediate.flux.asm",
+          "match": "\\b(SYS|TRAP|DBG|CLF|SEMA|YIELD|CACHE|STRIPCF)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.reg-imm8.flux.asm",
+          "match": "\\b(MOVI|ADDI|SUBI|ANDI|ORI|XORI|SHLI|SHRI)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.arithmetic.flux.asm",
+          "match": "\\b(ADD|SUB|MUL|DIV|MOD|AND|OR|XOR|SHL|SHR|MIN|MAX|CMP_EQ|CMP_LT|CMP_GT|CMP_NE)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.float.flux.asm",
+          "match": "\\b(FADD|FSUB|FMUL|FDIV|FMIN|FMAX|FTOI|ITOF|FMOD|FSQRT|FSIN|FCOS)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.memory.flux.asm",
+          "match": "\\b(LOAD|STORE|LOAD8|STORE8|MOV|SWP|LOADOFF|STOREOF|LOADI|STOREI|COPY|FILL|MEMCOPY|MEMSET|MEMCMP)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.control-flow.flux.asm",
+          "match": "\\b(JMP|JZ|JNZ|JLT|JGT|JG|JL|JGE|JLE|JE|JNE|JAL|JMPL|JALL|CALL|CALLL|TAIL|LOOP|SELECT|SWITCH)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.stack.flux.asm",
+          "match": "\\b(ENTER|LEAVE|ALLOCA|DUP|SWAP|ROT)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.comparison.flux.asm",
+          "match": "\\b(CMP|ICMP|IEQ|ILT|ILE|IGT|IGE|FEQ|FLT|FLE|FGT|FGE|TEST|SETCC)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.math.flux.asm",
+          "match": "\\b(ABS|SIGN|SQRT|POW|LOG2|CLZ|CTZ|POPCNT|RND|SEED)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.crypto.flux.asm",
+          "match": "\\b(CRC32|SHA256|HASH|HMAC|VERIFY|ENCRYPT|DECRYPT|KEYGEN)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.a2a.flux.asm",
+          "match": "\\b(TELL|ASK|DELEG|DELEGATE|BCAST|BROADCAST|ACCEPT|DECLINE|REPORT|MERGE|FORK|JOIN|SIGNAL|AWAIT|TRUST|DISCOV|STATUS|HEARTBT|REDUCE)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.confidence.flux.asm",
+          "match": "\\b(C_ADD|C_SUB|C_MUL|C_DIV|C_FADD|C_FSUB|C_FMUL|C_FDIV|C_MERGE|C_THRESH|C_BOOST|C_DECAY|C_SOURCE|C_CALIB|C_EXPLY|C_VOTE)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.viewpoint.flux.asm",
+          "match": "\\b(V_EVID|V_EPIST|V_MIR|V_NEG|V_TENSE|V_ASPEC|V_MODAL|V_POLIT|V_HONOR|V_TOPIC|V_FOCUS|V_CASE|V_AGREE|V_CLASS|V_INFL|V_PRAGMA)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.sensor.flux.asm",
+          "match": "\\b(SENSE|ACTUATE|SAMPLE|ENERGY|TEMP|GPS|ACCEL|DEPTH|CAMCAP|CAMDET|PWM|GPIO|I2C|SPI|UART|CANBUS)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.vector.flux.asm",
+          "match": "\\b(VLOAD|VSTORE|VADD|VSUB|VMUL|VDIV|VFMA|VDOT|VNORM|VSCALE|VMAXP|VMINP|VREDUCE|VGATHER|VSCATTER|VSHUF|VMERGE|VCONF|VSELECT)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.tensor.flux.asm",
+          "match": "\\b(TMATMUL|TCONV|TPOOL|TRELU|TSIGM|TSOFT|TLOSS|TGRAD|TUPDATE|TADAM|TEMBED|TATTN|TSAMPLE|TTOKEN|TDETOK|TQUANT)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.extended-memory.flux.asm",
+          "match": "\\b(DMA_CPY|DMA_SET|MMIO_R|MMIO_W|ATOMIC|CAS|FENCE|MALLOC|FREE|MPROT|MCACHE|GPU_LD|GPU_ST|GPU_EX|GPU_SYNC)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.collection.flux.asm",
+          "match": "\\b(LEN|CONCAT|AT|SETAT|SLICE|REDUCE|MAP|FILTER|SORT|FIND)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.coroutine.flux.asm",
+          "match": "\\b(COYIELD|CORESUM)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.debug.flux.asm",
+          "match": "\\b(DEBUG_BREAK|BRK|TRACE|PROF_ON|PROF_OFF|WATCH|DUMP|ASSERT)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.system-extended.flux.asm",
+          "match": "\\b(HALT_ERR|REBOOT|ID|VER|CLK|PCLK|WDOG|SLEEP|ILLEGAL|FAULT|HANDLER)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.region.flux.asm",
+          "match": "\\b(REGION_CREATE|REGION_DESTROY|REGION_TRANSFER|RESOURCE_ACQUIRE|RESOURCE_RELEASE)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.trust.flux.asm",
+          "match": "\\b(TRUST_CHECK|TRUST_UPDATE|TRUST_QUERY|REVOKE_TRUST|CAP_REQUIRE|CAP_REQUEST|CAP_GRANT|CAP_REVOKE|BARRIER|SYNC_CLOCK|FORMATION_UPDATE|EMERGENCY_STOP)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.cast.flux.asm",
+          "match": "\\b(CAST|BOX|UNBOX|CHECK_TYPE|CHECK_BOUNDS)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.reg-imm16.flux.asm",
+          "match": "\\b(MOVI16|ADDI16|SUBI16)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.call.flux.asm",
+          "match": "\\b(CALL_IND|TAILCALL)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.misc.flux.asm",
+          "match": "\\b(IADD|ISUB|IMUL|IDIV|IMOD|IREM|IAND|IOR|IXOR|INOT|ISHL|ISHR|ROTL|ROTR)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.float-legacy.flux.asm",
+          "match": "\\b(FNEG|FABS|FEQ|FLT|FLE|FGT|FGE)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.a2a-legacy.flux.asm",
+          "match": "\\b(DELEGATE_RESULT|REPORT_STATUS|REQUEST_OVERRIDE|DECLARE_INTENT|ASSERT_GOAL|VERIFY_OUTCOME|EXPLAIN_FAILURE|SET_PRIORITY)\\b"
+        },
+        {
+          "name": "keyword.control.instruction.reserved.flux.asm",
+          "match": "\\bRESERVED_[0-9A-Fa-f]{2}\\b"
+        }
+      ]
+    },
+
+    "asm-registers": {
+      "patterns": [
+        {
+          "name": "variable.other.register.gp.flux.asm",
+          "match": "\\bR(1[0-5]|[0-9])\\b"
+        },
+        {
+          "name": "variable.other.register.fp.flux.asm",
+          "match": "\\bF(1[0-5]|[0-9])\\b"
+        },
+        {
+          "name": "variable.other.register.vec.flux.asm",
+          "match": "\\bV(1[0-5]|[0-9])\\b"
+        },
+        {
+          "name": "variable.other.register.special.flux.asm",
+          "match": "\\b(SP|FP|LR|PC|FLAGS)\\b"
+        }
+      ]
+    },
+
+    "asm-immediates": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.flux.asm",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.flux.asm",
+          "match": "\\b0[bB][01]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.flux.asm",
+          "match": "\\b[+-]?(?:\\d+\\.\\d+|\\d+)\\b"
+        }
+      ]
+    },
+
+    "asm-strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.flux.asm",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.flux.asm",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+
+    "fir-ir": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.flux.fir",
+          "match": ";.*$"
+        },
+        {
+          "name": "keyword.control.function.flux.fir",
+          "match": "\\b(function|ret|jump|branch|call|br|unreachable)\\b"
+        },
+        {
+          "name": "keyword.control.block.flux.fir",
+          "match": "\\b(entry|while_header|while_body|while_exit|then|else|loop|merge|continue|break)\\s*:"
+        },
+        {
+          "name": "storage.type.flux.fir",
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|void)\\b"
+        },
+        {
+          "name": "entity.name.tag.ssa.flux.fir",
+          "match": "%[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        },
+        {
+          "name": "keyword.control.instruction.fir.flux.fir",
+          "match": "\\b(alloca|load|store|iadd|isub|imul|idiv|fadd|fsub|fmul|fdiv|ilt|ile|igt|ige|ieq|ine|flt|fle|fgt|fge|feq|fne|shl|shr|and|or|xor|not|neg|abs|sqrt|select|phi|extractelement|insertelement)\\b"
+        },
+        {
+          "name": "support.function.intrinsic.flux.fir",
+          "match": "\\b(malloc|free|memcpy|memset|memcmp|sizeof)\\b"
+        },
+        {
+          "name": "variable.other.register.flux.fir",
+          "match": "\\b(R(1[0-5]|[0-9])|F(1[0-5]|[0-9])|V(1[0-5]|[0-9]))\\b"
+        },
+        {
+          "name": "constant.numeric.hex.flux.fir",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.flux.fir",
+          "match": "\\b[+-]?(?:\\d+\\.\\d+|\\d+)\\b"
+        },
+        {
+          "name": "keyword.control.arrow.flux.fir",
+          "match": "->"
+        },
+        {
+          "name": "string.quoted.double.flux.fir",
+          "begin": "\"",
+          "end": "\""
+        }
+      ]
+    },
+
+    "flux-vocab": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.flux.vocab",
+          "match": ";.*$"
+        },
+        {
+          "name": "entity.name.function.vocab.flux.vocab",
+          "match": "^:[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+        {
+          "name": "comment.line.stack-effect.flux.vocab",
+          "match": "\\([^)]*\\)"
+        },
+        {
+          "patterns": [
+            { "include": "#flux-assembly" }
+          ]
+        }
+      ]
+    },
+
+    "data-block-content": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.json.flux.md",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.json.flux.md", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "constant.numeric.json.flux.md",
+          "match": "\\b-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.language.boolean.json.flux.md",
+          "match": "\\b(true|false|null)\\b"
+        }
+      ]
+    },
+
+    "markdown-elements": {
+      "patterns": [
+        {
+          "name": "markup.bold.markdown.flux.md",
+          "match": "\\*\\*(.+?)\\*\\*",
+          "captures": { "1": { "name": "markup.bold.markdown.flux.md" } }
+        },
+        {
+          "name": "markup.italic.markdown.flux.md",
+          "match": "\\*(.+?)\\*",
+          "captures": { "1": { "name": "markup.italic.markdown.flux.md" } }
+        },
+        {
+          "name": "markup.inline.code.markdown.flux.md",
+          "match": "`([^`]+)`",
+          "captures": { "1": { "name": "markup.inline.raw.string.flux.md" } }
+        },
+        {
+          "name": "markup.list.unnumbered.markdown.flux.md",
+          "match": "^\\s*[-*+]\\s+"
+        },
+        {
+          "name": "markup.list.numbered.markdown.flux.md",
+          "match": "^\\s*\\d+\\.\\s+"
+        },
+        {
+          "name": "storage.type.flux.md",
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|void|Vec4)\\b"
+        }
+      ]
+    }
+  }
+}
