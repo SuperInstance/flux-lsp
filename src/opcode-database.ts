@@ -435,7 +435,9 @@ export function getOpcodeCompletionItems(): CompletionItem[] {
             kind: CompletionItemKind.Function,
             detail: `0x${op.opcode.toString(16).toUpperCase().padStart(2, '0')} — Format ${op.format} — ${op.category}`,
             documentation: op.description,
-            insertText: buildOpcodeSnippet(op.mnemonic, op.operands),
+            insertText: op.operands.length === 0
+                ? op.mnemonic
+                : `${op.mnemonic} ${op.operands.filter(o => o.role !== '-').map(o => o.role === 'imm8' ? '${1:0}' : o.role === 'imm16' ? '${1:0}' : `$\{${o.role}\``).join(', ')}$0`,
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: op.mnemonic,
         } as CompletionItem;
