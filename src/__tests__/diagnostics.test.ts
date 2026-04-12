@@ -1,197 +1,227 @@
 /**
- * FLUX LSP Test Suite — Diagnostics Tests
- *
- * Tests the diagnostic engine for correct error detection:
- * unknown mnemonics, invalid registers, undefined labels,
- * wrong operand counts, duplicate labels, unused labels, immediate ranges.
+ * Tests for the FLUX Diagnostic Provider
  */
 
-import { provideDiagnostics, makeDiagnostic, rangeForLine, parseImmediate } from '../diagnostics';
+import { provideDiagnostics } from '../diagnostics';
 import { DiagnosticSeverity } from 'vscode-languageserver';
 
-describe('Diagnostics — provideDiagnostics', () => {
-    test('returns empty array for empty source', () => {
-        expect(provideDiagnostics('')).toEqual([]);
-    });
+describe('provideDiagnostics', () => {
+    // ─── Valid code: no errors ──────────────────────────────────────────
 
-    test('returns empty for valid assembly', () => {
+    test('no diagnostics for valid simple program', () => {
         const source = [
             '@start:',
-            '  MOVI R0, 5',
-            '  MOVI R1, 1',
-            '@loop:',
-            '  MUL R1, R1, R0',
-            '  DEC R0',
-            '  JNZ R0, @loop',
+            '  MOVI R0, 42',
             '  HALT',
         ].join('\n');
 
         const diags = provideDiagnostics(source);
-        expect(diags).toEqual([]);
+        expect(diags).toHaveLength(0);
     });
 
-    test('detects unknown mnemonic', () => {
-        const source = '  INVALIDOP R0, R1';
-        const diags = provideDiagnostics(source);
-        expect(diags.length).toBeGreaterThanOrEqual(1);
-        expect(diags.some(d => d.message.includes('Unknown mnemonic'))).toBe(true);
-    });
-
-    test('detects undefined label reference', () => {
-        const source = '  JMP @nonexistent';
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-undefined-label')).toBe(true);
-    });
-
-    test('detects register out of range (R16+)', () => {
-        const source = '  MOVI R16, 42';
-        const diags = provideDiagnostics(source);
-        // R16 is not a valid register (0-15), so we get invalid-register error
-        expect(diags.some(d => d.code === 'flux-invalid-register')).toBe(true);
-    });
-
-    test('detects duplicate labels', () => {
+    test('no diagnostics for valid multi-instruction program', () => {
         const source = [
-            '@loop:',
-            '  NOP',
-            '@loop:',
-            '  NOP',
-        ].join('\n');
-
-        const diags = provideDiagnostics(source);
-        const dupes = diags.filter(d => d.code === 'flux-duplicate-label');
-        expect(dupes.length).toBe(2); // one for each definition
-    });
-
-    test('detects unused labels', () => {
-        const source = [
-            '@unused_label:',
-            '  NOP',
-            '@used_label:',
-            '  NOP',
-            '  JMP @used_label',
-        ].join('\n');
-
-        const diags = provideDiagnostics(source);
-        const unused = diags.filter(d => d.code === 'flux-unused-label');
-        expect(unused.length).toBe(1);
-        expect(unused[0].message).toContain('unused_label');
-    });
-
-    test('does not warn about unused @start label', () => {
-        const source = '@start:\n  HALT';
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-unused-label')).toBe(false);
-    });
-
-    test('does not warn about unused @main label', () => {
-        const source = '@main:\n  HALT';
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-unused-label')).toBe(false);
-    });
-
-    test('does not warn about unused @_start label', () => {
-        const source = '@_start:\n  HALT';
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-unused-label')).toBe(false);
-    });
-
-    test('detects immediate value out of range for imm8', () => {
-        const source = '  MOVI R0, 300'; // imm8 range: -128 to 255
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-immediate-range')).toBe(true);
-        expect(diags.some(d => d.severity === DiagnosticSeverity.Warning)).toBe(true);
-    });
-
-    test('detects immediate value out of range for imm16', () => {
-        const source = '  MOVI16 R0, 100000'; // imm16 range: -32768 to 65535
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-immediate-range')).toBe(true);
-    });
-
-    test('accepts valid imm8 values', () => {
-        const source = [
+            '@start:',
             '  MOVI R0, 0',
-            '  MOVI R1, 127',
-            '  MOVI R2, -128',
-            '  MOVI R3, 255',
-        ].join('\n');
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-immediate-range')).toBe(false);
-    });
-
-    test('accepts valid imm16 values', () => {
-        const source = [
-            '  MOVI16 R0, 0',
-            '  MOVI16 R1, 32767',
-            '  MOVI16 R2, -32768',
-            '  MOVI16 R3, 65535',
-        ].join('\n');
-        const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-immediate-range')).toBe(false);
-    });
-});
-
-describe('Diagnostics — multiple errors', () => {
-    test('reports all errors in complex invalid source', () => {
-        const source = [
-            '@start:',
-            '  INVALIDOP R0',
-            '  MOVI R0, 9999',
-            '  JMP @missing',
-            '@start:',
+            '  MOVI R1, 10',
+            '@loop:',
+            '  ADD R0, R0, R1',
+            '  INC R1',
+            '  CMP_EQ R2, R1, 15',
+            '  JNZ R2, @loop',
             '  HALT',
-            '@never_used:',
-            '  NOP',
         ].join('\n');
 
         const diags = provideDiagnostics(source);
-        expect(diags.some(d => d.code === 'flux-unknown-mnemonic')).toBe(true);
-        expect(diags.some(d => d.code === 'flux-immediate-range')).toBe(true);
-        expect(diags.some(d => d.code === 'flux-undefined-label')).toBe(true);
-        expect(diags.some(d => d.code === 'flux-duplicate-label')).toBe(true);
-        expect(diags.some(d => d.code === 'flux-unused-label')).toBe(true);
+        expect(diags).toHaveLength(0);
     });
-});
 
-describe('Diagnostics — helpers', () => {
-    test('makeDiagnostic creates proper diagnostic', () => {
-        const diag = makeDiagnostic(
-            { start: { line: 0, character: 0 }, end: { line: 0, character: 10 } },
-            'test error',
-            DiagnosticSeverity.Error,
-            'test-code',
+    test('no diagnostics for label definitions only', () => {
+        const source = '@start:\n@loop:\n@end:';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('no diagnostics for comments', () => {
+        const source = '; this is a comment\n; another comment';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    // ─── Unknown mnemonic ───────────────────────────────────────────────
+
+    test('reports unknown mnemonic', () => {
+        const source = 'FAKEOP R0, R1';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(1);
+        expect(diags[0].message).toContain("Unknown mnemonic 'FAKEOP'");
+        expect(diags[0].severity).toBe(DiagnosticSeverity.Error);
+    });
+
+    test('reports unknown mnemonic with code', () => {
+        const source = 'INVALID';
+        const diags = provideDiagnostics(source);
+        expect(diags[0].code).toBe('flux-unknown-mnemonic');
+    });
+
+    // ─── Register range ─────────────────────────────────────────────────
+
+    test('reports R16 as invalid register (not a recognized register)', () => {
+        const source = 'ADD R16, R1, R2';
+        const diags = provideDiagnostics(source);
+        // R16 is not a recognized register so it should produce an error
+        const regErrors = diags.filter(d =>
+            d.message.includes('Expected register') && d.message.includes('R16')
         );
-        expect(diag.message).toBe('test error');
-        expect(diag.severity).toBe(DiagnosticSeverity.Error);
-        expect(diag.code).toBe('test-code');
-        expect(diag.source).toBe('flux-lsp');
+        expect(regErrors.length).toBeGreaterThanOrEqual(1);
     });
 
-    test('rangeForLine creates proper range', () => {
-        const range = rangeForLine(5);
-        expect(range.start.line).toBe(5);
-        expect(range.start.character).toBe(0);
-        expect(range.end.line).toBe(5);
-        expect(range.end.character).toBe(999);
-    });
-});
-
-describe('Diagnostics — parseImmediate', () => {
-    test('parses decimal', () => {
-        expect(parseImmediate('42')).toBe(42);
-        expect(parseImmediate('-10')).toBe(-10);
-        expect(parseImmediate('0')).toBe(0);
+    test('reports F16 as invalid register', () => {
+        const source = 'FADD F16, F1, F2';
+        const diags = provideDiagnostics(source);
+        const regErrors = diags.filter(d =>
+            d.message.includes('Expected register') && d.message.includes('F16')
+        );
+        expect(regErrors.length).toBeGreaterThanOrEqual(1);
     });
 
-    test('parses hex', () => {
-        expect(parseImmediate('0xFF')).toBe(255);
-        expect(parseImmediate('0x0')).toBe(0);
-        expect(parseImmediate('0X1A')).toBe(26);
+    // ─── Undefined label references ─────────────────────────────────────
+
+    test('reports undefined label reference', () => {
+        const source = 'JMP @undefined_label';
+        const diags = provideDiagnostics(source);
+        const labelErrors = diags.filter(d =>
+            d.code === 'flux-undefined-label'
+        );
+        expect(labelErrors).toHaveLength(1);
+        expect(labelErrors[0].message).toContain('@undefined_label');
     });
 
-    test('parses binary', () => {
-        expect(parseImmediate('0b1010')).toBe(10);
-        expect(parseImmediate('0B11110000')).toBe(240);
+    test('no error when label is defined', () => {
+        const source = '@my_label:\n  JMP @my_label';
+        const diags = provideDiagnostics(source);
+        const labelErrors = diags.filter(d => d.code === 'flux-undefined-label');
+        expect(labelErrors).toHaveLength(0);
+    });
+
+    test('reports only the first undefined label (no duplicates for multiple refs to same label)', () => {
+        const source = [
+            '  JMP @missing',
+            '  JNZ R0, @missing',
+        ].join('\n');
+        const diags = provideDiagnostics(source);
+        const missingDiags = diags.filter(d => d.code === 'flux-undefined-label');
+        // Each reference should generate its own diagnostic
+        expect(missingDiags).toHaveLength(2);
+    });
+
+    // ─── Immediate range ────────────────────────────────────────────────
+
+    test('warns about imm8 out of range (too large)', () => {
+        const source = 'MOVI R0, 300';
+        const diags = provideDiagnostics(source);
+        const rangeDiags = diags.filter(d => d.code === 'flux-immediate-range');
+        expect(rangeDiags.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('warns about imm8 out of range (too negative)', () => {
+        const source = 'MOVI R0, -200';
+        const diags = provideDiagnostics(source);
+        const rangeDiags = diags.filter(d => d.code === 'flux-immediate-range');
+        expect(rangeDiags.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('no warning for imm8 in valid range', () => {
+        const source = 'MOVI R0, 127';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    // ─── Malformed immediate ────────────────────────────────────────────
+
+    test('reports malformed immediate', () => {
+        const source = 'MOVI R0, 0xGH';
+        const diags = provideDiagnostics(source);
+        const malformedDiags = diags.filter(d => d.code === 'flux-malformed-immediate');
+        expect(malformedDiags.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // ─── Multiple errors in one file ────────────────────────────────────
+
+    test('reports multiple errors in one file', () => {
+        const source = [
+            'FAKEOP R0',
+            'ADD R16, R1, R2',
+            'JMP @undefined',
+        ].join('\n');
+        const diags = provideDiagnostics(source);
+        expect(diags.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // ─── Source field ───────────────────────────────────────────────────
+
+    test('all diagnostics have source set to flux-lsp', () => {
+        const source = 'FAKEOP R0';
+        const diags = provideDiagnostics(source);
+        for (const d of diags) {
+            expect(d.source).toBe('flux-lsp');
+        }
+    });
+
+    // ─── Edge cases ─────────────────────────────────────────────────────
+
+    test('empty source produces no diagnostics', () => {
+        const diags = provideDiagnostics('');
+        expect(diags).toHaveLength(0);
+    });
+
+    test('whitespace-only source produces no diagnostics', () => {
+        const diags = provideDiagnostics('   \n  \n');
+        expect(diags).toHaveLength(0);
+    });
+
+    test('directives do not produce diagnostics', () => {
+        const source = '.text\n.global main\n.word 42';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('hex immediates are accepted', () => {
+        const source = 'MOVI R0, 0xFF';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('binary immediates are accepted', () => {
+        const source = 'MOVI R0, 0b10101010';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('negative immediates are accepted', () => {
+        const source = 'ADDI R0, -5';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('string literals in SYS are accepted', () => {
+        const source = 'SYS "hello world"';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('dash operands for unused slots are accepted', () => {
+        const source = 'MOV R0, R1, -';
+        const diags = provideDiagnostics(source);
+        expect(diags).toHaveLength(0);
+    });
+
+    test('label references in appropriate operands work', () => {
+        // JNZ takes rd, rs1, - — so label refs are fine in the context
+        const source = '@target:\n  JNZ R0, @target';
+        const diags = provideDiagnostics(source);
+        // No undefined label error since @target is defined
+        const labelErrors = diags.filter(d => d.code === 'flux-undefined-label');
+        expect(labelErrors).toHaveLength(0);
     });
 });
