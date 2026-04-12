@@ -97,5 +97,11 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/SuperInstance/flux-lsp"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "roots": ["src"],
+    "testMatch": ["**/__tests__/**/*.test.ts"]
   }
 }

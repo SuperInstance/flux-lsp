@@ -402,25 +402,40 @@ export const DIRECTIVES = [
     '.macro', '.endm', '.include', '.set',
 ];
 
+/** Generate snippet insert text for an opcode's operands. */
+function buildOpcodeSnippet(mnemonic: string, operands: OperandInfo[]): string {
+    const activeOps = operands.filter(o => o.role !== '-');
+    if (activeOps.length === 0) return mnemonic;
+
+    const roleToPlaceholder = new Map<string, number>();
+    let nextPlaceholder = 1;
+
+    const parts = activeOps.map(o => {
+        if (o.role === 'imm8' || o.role === 'imm16') {
+            return `\${${nextPlaceholder++}:0}`;
+        }
+        // Register operand — reuse same placeholder if same role appears again
+        if (!roleToPlaceholder.has(o.role)) {
+            roleToPlaceholder.set(o.role, nextPlaceholder++);
+        }
+        return `\${${roleToPlaceholder.get(o.role)}:${o.role}}`;
+    });
+
+    return `${mnemonic} ${parts.join(', ')}$0`;
+}
+
 /** Generate LSP CompletionItems for all opcodes. */
 export function getOpcodeCompletionItems(): CompletionItem[] {
     return RAW_OPCODES.map(op => {
-        const operandStr = op.operands
-            .filter(o => o.role !== '-')
-            .map(o => o.role)
-            .join(', ');
-        const insertText = operandStr
-            ? `${op.mnemonic} ${operandStr.replace(/(rd|rs1|rs2)/g, '$${1}')}`
-            : op.mnemonic;
+        const activeOps = op.operands.filter(o => o.role !== '-');
+        const operandStr = activeOps.map(o => o.role).join(', ');
 
         return {
             label: op.mnemonic,
             kind: CompletionItemKind.Function,
             detail: `0x${op.opcode.toString(16).toUpperCase().padStart(2, '0')} — Format ${op.format} — ${op.category}`,
             documentation: op.description,
-            insertText: op.operands.length === 0
-                ? op.mnemonic
-                : `${op.mnemonic} ${op.operands.filter(o => o.role !== '-').map(o => o.role === 'imm8' ? '${1:0}' : o.role === 'imm16' ? '${1:0}' : `$\{${op.role}\``).join(', ')}$0`,
+            insertText: buildOpcodeSnippet(op.mnemonic, op.operands),
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: op.mnemonic,
         } as CompletionItem;
@@ -483,4 +498,54 @@ export function getDirectiveCompletionItems(): CompletionItem[] {
         detail: 'FLUX assembler directive',
         sortText: `4${d}`,
     }));
+}
+
+// ─── Directive Documentation ────────────────────────────────────────────────
+
+interface DirectiveInfo {
+    name: string;
+    syntax: string;
+    description: string;
+    example?: string;
+}
+
+const DIRECTIVE_DOCS: DirectiveInfo[] = [
+    { name: '.text', syntax: '.text', description: 'Switch to the code (text) section. All subsequent instructions go here.' },
+    { name: '.data', syntax: '.data', description: 'Switch to the initialized data section. Used for .word, .ascii, etc.' },
+    { name: '.bss', syntax: '.bss', description: 'Switch to uninitialized data section. Used for .space reservations.' },
+    { name: '.global', syntax: '.global <symbol>', description: 'Export a label symbol so it can be referenced from other files.', example: '.global main' },
+    { name: '.extern', syntax: '.extern <symbol>', description: 'Declare a symbol that is defined in another file.', example: '.extern printf' },
+    { name: '.ascii', syntax: '.ascii "string"', description: 'Emit a null-terminated ASCII string literal into the data section.' },
+    { name: '.asciz', syntax: '.asciz "string"', description: 'Emit a NUL-terminated string (same as .ascii, adds NUL byte).' },
+    { name: '.byte', syntax: '.byte <value>[, ...]', description: 'Emit one or more 8-bit byte values.', example: '.byte 0x41, 0x42, 0x43' },
+    { name: '.word', syntax: '.word <value>[, ...]', description: 'Emit one or more 32-bit word values.', example: '.word 0xDEADBEEF' },
+    { name: '.half', syntax: '.half <value>[, ...]', description: 'Emit one or more 16-bit halfword values.' },
+    { name: '.space', syntax: '.space <bytes>', description: 'Reserve <bytes> bytes of zero-initialized storage.', example: '.space 1024' },
+    { name: '.align', syntax: '.align <n>', description: 'Align the next data/instruction to a 2^n byte boundary.', example: '.align 4' },
+    { name: '.section', syntax: '.section <name>', description: 'Switch to a named section. Common: .text, .data, .bss.' },
+    { name: '.type', syntax: '.type <symbol>, @<type>', description: 'Set the type of a symbol (e.g., @function, @object).', example: '.type main, @function' },
+    { name: '.size', syntax: '.size <symbol>, . - <symbol>', description: 'Set the size of a symbol (used with .type).', example: '.size main, . - main' },
+    { name: '.equ', syntax: '.equ <name>, <value>', description: 'Define a named constant (assembly-time substitution).', example: '.equ BUF_SIZE, 256' },
+    { name: '.macro', syntax: '.macro <name> <params...>', description: 'Begin a macro definition. Ends with .endm.' },
+    { name: '.endm', syntax: '.endm', description: 'End a macro definition started with .macro.' },
+    { name: '.include', syntax: '.include "<file>"', description: 'Include another assembly file at this point.', example: '.include "constants.flux"' },
+    { name: '.set', syntax: '.set <name>, <value>', description: 'Set a symbol to a value (like .equ but reassignable).' },
+];
+
+/**
+ * Look up documentation for an assembler directive.
+ */
+export function lookupDirective(name: string): DirectiveInfo | undefined {
+    return DIRECTIVE_DOCS.find(d => d.name === name);
+}
+
+/**
+ * Format directive information as Markdown for hover.
+ */
+export function formatDirectiveMarkdown(info: DirectiveInfo): string {
+    let md = `**${info.name}** — ${info.syntax}\n\n${info.description}`;
+    if (info.example) {
+        md += `\n\n\`\`\`\n${info.example}\n\`\`\``;
+    }
+    return md;
 }

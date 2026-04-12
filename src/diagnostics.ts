@@ -3,7 +3,7 @@
  *
  * Validates FLUX assembly source and produces LSP Diagnostics.
  * Checks for: unknown mnemonics, invalid registers, undefined labels,
- * malformed immediates, wrong operand counts.
+ * malformed immediates, wrong operand counts, duplicate labels, unused labels.
  */
 
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
@@ -32,6 +32,28 @@ export function provideDiagnostics(source: string): Diagnostic[] {
     const labels = extractLabels(lines);
     const labelRefs = extractLabelReferences(lines);
     const diagnostics: Diagnostic[] = [];
+
+    // Pass 0: duplicate label detection
+    const labelDefinitionCounts = new Map<string, number[]>();
+    for (const line of lines) {
+        if (line.label && (line.type === 'label' || line.type === 'opcode')) {
+            const existing = labelDefinitionCounts.get(line.label) || [];
+            existing.push(line.lineNumber);
+            labelDefinitionCounts.set(line.label, existing);
+        }
+    }
+    for (const [name, occurrences] of labelDefinitionCounts) {
+        if (occurrences.length > 1) {
+            for (const lineNum of occurrences) {
+                diagnostics.push(makeDiagnostic(
+                    rangeForLine(lineNum),
+                    `Duplicate label definition '@${name}'`,
+                    DiagnosticSeverity.Error,
+                    'flux-duplicate-label',
+                ));
+            }
+        }
+    }
 
     // Pass 1: per-line checks (mnemonics, registers, immediates, operand count)
     for (const line of lines) {
@@ -166,6 +188,24 @@ export function provideDiagnostics(source: string): Diagnostic[] {
         }
     }
 
+    // Pass 3: unused label warnings
+    const referencedLabels = new Set(labelRefs.map(r => r.name));
+    for (const [name, defLines] of labelDefinitionCounts) {
+        if (!referencedLabels.has(name)) {
+            // Only warn for labels that are not entry points (@start, @main, @entry)
+            const lowerName = name.toLowerCase();
+            if (lowerName !== 'start' && lowerName !== 'main' && lowerName !== 'entry' && lowerName !== '_start') {
+                // Report on the first definition
+                diagnostics.push(makeDiagnostic(
+                    rangeForLine(defLines[0]),
+                    `Label '@${name}' is defined but never referenced`,
+                    DiagnosticSeverity.Hint,
+                    'flux-unused-label',
+                ));
+            }
+        }
+    }
+
     return diagnostics;
 }
 
@@ -174,7 +214,7 @@ export function provideDiagnostics(source: string): Diagnostic[] {
 /**
  * Create a diagnostic with standard settings.
  */
-function makeDiagnostic(
+export function makeDiagnostic(
     range: Range,
     message: string,
     severity: DiagnosticSeverity,
@@ -192,7 +232,7 @@ function makeDiagnostic(
 /**
  * Create a range spanning an entire line.
  */
-function rangeForLine(line: number): Range {
+export function rangeForLine(line: number): Range {
     return {
         start: { line, character: 0 },
         end: { line, character: 999 },
@@ -202,7 +242,7 @@ function rangeForLine(line: number): Range {
 /**
  * Parse an immediate value string to a number.
  */
-function parseImmediate(token: string): number {
+export function parseImmediate(token: string): number {
     if (token.startsWith('0x') || token.startsWith('0X')) {
         return parseInt(token, 16);
     }

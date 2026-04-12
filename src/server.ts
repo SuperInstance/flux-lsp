@@ -18,6 +18,7 @@ import {
     TextDocumentSyncKind,
     CompletionParams,
     CompletionItem,
+    CompletionList,
     HoverParams,
     Hover,
     DefinitionParams,
@@ -31,12 +32,18 @@ import {
     MarkupKind,
     Range,
     Position,
+    ReferenceParams,
+    ReferenceContext,
+    Location,
+    RenameParams,
+    WorkspaceEdit,
+    TextEdit,
 } from 'vscode-languageserver';
 import {
     TextDocument,
 } from 'vscode-languageserver-textdocument';
 
-import { lookupOpcode, formatOpcodeMarkdown, getOpcodeCompletionItems, getRegisterCompletionItems, getDirectiveCompletionItems } from './opcode-database';
+import { lookupOpcode, formatOpcodeMarkdown, getOpcodeCompletionItems, getRegisterCompletionItems, getDirectiveCompletionItems, lookupDirective, formatDirectiveMarkdown } from './opcode-database';
 import {
     parseFluxAssembly,
     extractLabels,
@@ -74,17 +81,16 @@ export class FluxLanguageServer {
                 hoverProvider: true,
                 definitionProvider: true,
                 documentSymbolProvider: true,
-                referencesProvider: false, // future: find all label usages
+                referencesProvider: true,
                 codeActionProvider: false, // future: quick fixes
-                signatureHelpProvider: false,
-                renameProvider: false,
+                renameProvider: { prepareProvider: true },
                 foldingRangeProvider: true,
                 workspaceSymbolProvider: false,
             },
         };
 
-        this.connection.log('FLUX LSP initialized');
-        this.connection.log(`Client: ${params.clientInfo?.name || 'unknown'}`);
+        this.connection.console.log('FLUX LSP initialized');
+        this.connection.console.log(`Client: ${params.clientInfo?.name || 'unknown'}`);
         return result;
     }
 
@@ -110,7 +116,12 @@ export class FluxLanguageServer {
         this.connection.onDocumentSymbol((params) => this.onDocumentSymbol(params));
 
         // Folding ranges
-        this.connection.languages.foldingRanges.on((params) => this.onFoldingRanges(params));
+        this.connection.languages.foldingRange.on((params) => this.onFoldingRanges(params));
+
+        // References & Rename
+        this.connection.onReferences((params) => this.onReferences(params));
+        this.connection.onPrepareRename((params) => this.onPrepareRename(params));
+        this.connection.onRenameRequest((params) => this.onRenameRequest(params));
     }
 
     /**
@@ -203,7 +214,7 @@ export class FluxLanguageServer {
 
     // ─── Completion Handler ──────────────────────────────────────────────────
 
-    async onCompletion(params: CompletionParams): Promise<CompletionItem[] | CompletionList> {
+    async onCompletion(params: CompletionParams): Promise<CompletionItem[] | CompletionList | null> {
         const uri = params.textDocument.uri;
         const doc = this.documents.get(uri);
         if (!doc) return [];
@@ -367,6 +378,15 @@ export class FluxLanguageServer {
 
         // Hover on directive
         if (word.startsWith('.')) {
+            const directiveInfo = lookupDirective(word);
+            if (directiveInfo) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: formatDirectiveMarkdown(directiveInfo),
+                    },
+                };
+            }
             return {
                 contents: {
                     kind: MarkupKind.Markdown,
@@ -418,7 +438,7 @@ export class FluxLanguageServer {
 
     // ─── Go-to-Definition Handler ────────────────────────────────────────────
 
-    async onDefinition(params: DefinitionParams): Promise<Definition> {
+    async onDefinition(params: DefinitionParams): Promise<Definition | null> {
         const uri = params.textDocument.uri;
         const doc = this.documents.get(uri);
         if (!doc) return null;
@@ -561,6 +581,135 @@ export class FluxLanguageServer {
             }
         }
         return lines.length - 1;
+    }
+
+    // ─── References Handler ──────────────────────────────────────────────────
+
+    async onReferences(params: ReferenceParams): Promise<Location[]> {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return [];
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word || !word.startsWith('@')) return [];
+
+        const labelName = word.startsWith('@') ? word.slice(1) : word;
+        const lines = this.getParsedLines(uri);
+        const locations: Location[] = [];
+
+        for (const line of lines) {
+            // Label definition
+            if (line.label === labelName) {
+                const col = line.lineText.indexOf(`@${labelName}`);
+                locations.push({
+                    uri,
+                    range: {
+                        start: { line: line.lineNumber, character: col >= 0 ? col : 0 },
+                        end: { line: line.lineNumber, character: (col >= 0 ? col : 0) + labelName.length + 1 },
+                    },
+                });
+            }
+
+            // Label references in operands
+            if (line.operands) {
+                for (const op of line.operands) {
+                    const refMatch = op.match(/^@(\w+)$/);
+                    if (refMatch && refMatch[1] === labelName) {
+                        const col = line.lineText.indexOf(op);
+                        locations.push({
+                            uri,
+                            range: {
+                                start: { line: line.lineNumber, character: col >= 0 ? col : 0 },
+                                end: { line: line.lineNumber, character: (col >= 0 ? col : 0) + op.length },
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
+        return locations;
+    }
+
+    // ─── Rename Handler ──────────────────────────────────────────────────────
+
+    onPrepareRename(params: { textDocument: { uri: string }; position: Position }): Range | null {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return null;
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word || !word.startsWith('@')) return null;
+
+        const line = doc.getText(Range.create(
+            Position.create(params.position.line, 0),
+            Position.create(params.position.line, 999),
+        ));
+        const idx = line.indexOf(word);
+        if (idx < 0) return null;
+
+        return Range.create(
+            Position.create(params.position.line, idx),
+            Position.create(params.position.line, idx + word.length),
+        );
+    }
+
+    async onRenameRequest(params: RenameParams): Promise<WorkspaceEdit | null> {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return null;
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word || !word.startsWith('@')) return null;
+
+        const labelName = word.startsWith('@') ? word.slice(1) : word;
+        const newName = params.newName.startsWith('@') ? params.newName.slice(1) : params.newName;
+
+        // Validate new name
+        if (!/^[a-zA-Z_]\w*$/.test(newName)) return null;
+
+        const lines = this.getParsedLines(uri);
+        const edits: TextEdit[] = [];
+
+        for (const line of lines) {
+            // Label definition: @oldname:
+            if (line.label === labelName) {
+                const oldText = `@${labelName}`;
+                const col = line.lineText.indexOf(oldText);
+                if (col >= 0) {
+                    edits.push(TextEdit.replace(
+                        Range.create(
+                            Position.create(line.lineNumber, col),
+                            Position.create(line.lineNumber, col + oldText.length),
+                        ),
+                        `@${newName}`,
+                    ));
+                }
+            }
+
+            // Label references in operands
+            if (line.operands) {
+                for (const op of line.operands) {
+                    const refMatch = op.match(/^@(\w+)$/);
+                    if (refMatch && refMatch[1] === labelName) {
+                        const col = line.lineText.indexOf(op);
+                        if (col >= 0) {
+                            edits.push(TextEdit.replace(
+                                Range.create(
+                                    Position.create(line.lineNumber, col),
+                                    Position.create(line.lineNumber, col + op.length),
+                                ),
+                                `@${newName}`,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if (edits.length === 0) return null;
+
+        return { changes: { [uri]: edits } };
     }
 
     // ─── Folding Ranges Handler ──────────────────────────────────────────────
