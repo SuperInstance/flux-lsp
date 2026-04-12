@@ -18,6 +18,7 @@ import {
     TextDocumentSyncKind,
     CompletionParams,
     CompletionItem,
+    CompletionList,
     HoverParams,
     Hover,
     DefinitionParams,
@@ -76,15 +77,14 @@ export class FluxLanguageServer {
                 documentSymbolProvider: true,
                 referencesProvider: false, // future: find all label usages
                 codeActionProvider: false, // future: quick fixes
-                signatureHelpProvider: false,
                 renameProvider: false,
                 foldingRangeProvider: true,
                 workspaceSymbolProvider: false,
             },
         };
 
-        this.connection.log('FLUX LSP initialized');
-        this.connection.log(`Client: ${params.clientInfo?.name || 'unknown'}`);
+        console.log('FLUX LSP initialized');
+        console.log(`Client: ${params.clientInfo?.name || 'unknown'}`);
         return result;
     }
 
@@ -110,7 +110,7 @@ export class FluxLanguageServer {
         this.connection.onDocumentSymbol((params) => this.onDocumentSymbol(params));
 
         // Folding ranges
-        this.connection.languages.foldingRanges.on((params) => this.onFoldingRanges(params));
+        this.connection.languages.foldingRange.on((params: any) => this.onFoldingRanges(params));
     }
 
     /**
@@ -418,7 +418,7 @@ export class FluxLanguageServer {
 
     // ─── Go-to-Definition Handler ────────────────────────────────────────────
 
-    async onDefinition(params: DefinitionParams): Promise<Definition> {
+    async onDefinition(params: DefinitionParams): Promise<Definition | null> {
         const uri = params.textDocument.uri;
         const doc = this.documents.get(uri);
         if (!doc) return null;

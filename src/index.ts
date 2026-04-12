@@ -36,7 +36,7 @@ connection.onInitialize(async (params) => {
 });
 
 connection.onInitialized(() => {
-    connection.log('FLUX LSP fully initialized and ready');
+    console.log('FLUX LSP fully initialized and ready');
 });
 
 // Register all request/notification handlers.

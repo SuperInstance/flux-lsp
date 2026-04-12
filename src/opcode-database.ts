@@ -420,7 +420,7 @@ export function getOpcodeCompletionItems(): CompletionItem[] {
             documentation: op.description,
             insertText: op.operands.length === 0
                 ? op.mnemonic
-                : `${op.mnemonic} ${op.operands.filter(o => o.role !== '-').map(o => o.role === 'imm8' ? '${1:0}' : o.role === 'imm16' ? '${1:0}' : `$\{${op.role}\``).join(', ')}$0`,
+                : `${op.mnemonic} ${op.operands.filter(o => o.role !== '-').map(o => o.role === 'imm8' ? '${1:0}' : o.role === 'imm16' ? '${1:0}' : `\${1:${o.role}}`).join(', ')}$0`,
             insertTextFormat: InsertTextFormat.Snippet,
             sortText: op.mnemonic,
         } as CompletionItem;
