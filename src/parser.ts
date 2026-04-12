@@ -343,8 +343,8 @@ export function validateOperandCount(mnemonic: string, operandCount: number): st
     // Special: JMP can have just a label reference (parsed as 1 operand)
     // MOVI and friends can have just a register (missing imm — might be on next line)
     // Allow some flexibility for common patterns
-    const hasUnused = info.operands.some(o => o.role === '-');
-    if (operandCount === expectedCount - 1 && hasUnused) {
+    const hasUnused = info.operands.find(o => o.role === '-');
+    if (operandCount === expectedCount - 1 && hasUnused !== undefined) {
         return null; // Missing unused operand is fine
     }
 

@@ -32,12 +32,8 @@ import {
     MarkupKind,
     Range,
     Position,
-    ReferenceParams,
-    ReferenceContext,
     Location,
-    RenameParams,
-    WorkspaceEdit,
-    TextEdit,
+    ReferenceParams,
 } from 'vscode-languageserver';
 import {
     TextDocument,
@@ -48,6 +44,7 @@ import {
     parseFluxAssembly,
     extractLabels,
     extractLabelInfos,
+    extractLabelReferences,
     extractSections,
     ParsedLine,
     isRegister,
@@ -82,15 +79,15 @@ export class FluxLanguageServer {
                 definitionProvider: true,
                 documentSymbolProvider: true,
                 referencesProvider: true,
-                codeActionProvider: false, // future: quick fixes
-                renameProvider: { prepareProvider: true },
+                codeActionProvider: undefined,
+                renameProvider: undefined,
                 foldingRangeProvider: true,
                 workspaceSymbolProvider: false,
             },
         };
 
-        this.connection.console.log('FLUX LSP initialized');
-        this.connection.console.log(`Client: ${params.clientInfo?.name || 'unknown'}`);
+        this.connection.console.info('FLUX LSP initialized');
+        this.connection.console.info(`Client: ${params.clientInfo?.name || 'unknown'}`);
         return result;
     }
 
@@ -118,10 +115,8 @@ export class FluxLanguageServer {
         // Folding ranges
         this.connection.languages.foldingRange.on((params) => this.onFoldingRanges(params));
 
-        // References & Rename
+        // Find references
         this.connection.onReferences((params) => this.onReferences(params));
-        this.connection.onPrepareRename((params) => this.onPrepareRename(params));
-        this.connection.onRenameRequest((params) => this.onRenameRequest(params));
     }
 
     /**
@@ -214,7 +209,7 @@ export class FluxLanguageServer {
 
     // ─── Completion Handler ──────────────────────────────────────────────────
 
-    async onCompletion(params: CompletionParams): Promise<CompletionItem[] | CompletionList | null> {
+    async onCompletion(params: CompletionParams): Promise<CompletionItem[]> {
         const uri = params.textDocument.uri;
         const doc = this.documents.get(uri);
         if (!doc) return [];
@@ -714,7 +709,7 @@ export class FluxLanguageServer {
 
     // ─── Folding Ranges Handler ──────────────────────────────────────────────
 
-    private onFoldingRanges(params: any): any[] {
+    private onFoldingRanges(params: { textDocument: { uri: string } }): any[] {
         const uri = params.textDocument.uri;
         const lines = this.getParsedLines(uri);
         const ranges: any[] = [];
@@ -733,6 +728,55 @@ export class FluxLanguageServer {
         }
 
         return ranges;
+    }
+
+    // ─── Find References Handler ─────────────────────────────────────────────
+
+    async onReferences(params: ReferenceParams): Promise<Location[]> {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return [];
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word) return [];
+
+        const locations: Location[] = [];
+
+        // Find references to a label
+        const labelName = word.startsWith('@') ? word.slice(1) : word;
+        const lines = this.getParsedLines(uri);
+        const labels = extractLabels(lines);
+        const labelRefs = extractLabelReferences(lines);
+
+        // Only provide references if the label is defined (or if cursor is on a definition)
+        if (labels.has(labelName)) {
+            // Add the definition itself if includeDeclaration is true
+            if (params.context.includeDeclaration) {
+                const defLine = labels.get(labelName)!;
+                locations.push({
+                    uri,
+                    range: {
+                        start: { line: defLine, character: 0 },
+                        end: { line: defLine, character: 999 },
+                    },
+                });
+            }
+
+            // Add all references
+            for (const ref of labelRefs) {
+                if (ref.name === labelName) {
+                    locations.push({
+                        uri,
+                        range: {
+                            start: { line: ref.line, character: ref.col },
+                            end: { line: ref.line, character: ref.col + ref.name.length + 1 },
+                        },
+                    });
+                }
+            }
+        }
+
+        return locations;
     }
 
     // ─── Utilities ───────────────────────────────────────────────────────────
