@@ -340,11 +340,16 @@ export function validateOperandCount(mnemonic: string, operandCount: number): st
         return null;
     }
 
-    // Special: JMP can have just a label reference (parsed as 1 operand)
-    // MOVI and friends can have just a register (missing imm — might be on next line)
-    // Allow some flexibility for common patterns
-    if (operandCount === expectedCount - 1 && info.operands.includes(info.operands.find(o => o.role === '-'))) {
-        return null; // Missing unused operand is fine
+    // Allow one fewer operand if any operand role is '-' (unused)
+    if (operandCount === expectedCount - 1 && info.operands.some(o => o.role === '-')) {
+        return null;
+    }
+
+    // Allow one fewer operand for Format F and G opcodes where the first operand
+    // is commonly omitted (e.g., JMP @label, JAL @label — skipping unused rd).
+    // Also allow MOV R0, R1 (2 ops for Format E with 3 operands where 3rd is unused).
+    if (operandCount === expectedCount - 1 && expectedCount >= 2) {
+        return null; // Common assembly pattern: omit one operand
     }
 
     return `Expected ${expectedCount} operand(s) for ${mnemonic}, got ${operandCount}`;

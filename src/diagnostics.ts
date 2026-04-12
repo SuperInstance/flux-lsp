@@ -79,6 +79,20 @@ export function provideDiagnostics(source: string): Diagnostic[] {
                     // Expected register
                     if (expected.role === 'rd' || expected.role === 'rs1' || expected.role === 'rs2') {
                         if (!isRegister(op)) {
+                            // Check if it looks like a register but out of range (e.g. R16, F20, V99)
+                            const oorMatch = op.match(/^[RFV](\d+)$/);
+                            if (oorMatch) {
+                                const num = parseInt(oorMatch[1]);
+                                if (num > 15) {
+                                    diagnostics.push(makeDiagnostic(
+                                        rangeForLine(line.lineNumber),
+                                        `Register ${op} out of range (valid: 0-15)`,
+                                        DiagnosticSeverity.Error,
+                                        'flux-register-range',
+                                    ));
+                                    continue; // Skip further checks for this operand
+                                }
+                            }
                             // Could be an immediate being used where register expected
                             // or an unknown identifier — only warn if it looks like neither
                             if (!isImmediate(op)) {
@@ -90,7 +104,7 @@ export function provideDiagnostics(source: string): Diagnostic[] {
                                 ));
                             }
                         } else {
-                            // Register exists — check for R16+ (out of range)
+                            // Register exists — check for R16+ (out of range) — already handled by isRegister but double-check
                             const regMatch = op.match(/^[RFV](\d+)$/);
                             if (regMatch) {
                                 const num = parseInt(regMatch[1]);
