@@ -1,25 +1,101 @@
 {
   "name": "flux-lsp",
   "version": "0.1.0",
-  "description": "Language Server Protocol implementation for FLUX",
+  "description": "Language Server Protocol implementation for FLUX assembly",
+  "displayName": "FLUX Language Server",
+  "publisher": "superinstance",
   "main": "dist/server.js",
-  "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
-    "test": "jest"
+  "engines": {
+    "vscode": "^1.75.0"
   },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "flux",
+    "assembly",
+    "language-server",
+    "lsp",
+    "bytecode"
+  ],
+  "activationEvents": [
+    "onLanguage:flux.md",
+    "onLanguage:flux"
+  ],
   "contributes": {
-    "languages": [{
-      "id": "flux.md",
-      "aliases": ["FLUX Markdown", "flux"],
-      "extensions": [".flux.md"],
-      "filenames": ["FLUX"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "flux.md",
-      "scopeName": "source.flux.md",
-      "path": "./grammars/flux.tmLanguage.json"
-    }]
+    "languages": [
+      {
+        "id": "flux.md",
+        "aliases": ["FLUX Markdown", "flux"],
+        "extensions": [".flux.md"],
+        "filenames": ["FLUX"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "flux",
+        "aliases": ["FLUX Assembly"],
+        "extensions": [".flux", ".s.flux"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "flux.md",
+        "scopeName": "source.flux.md",
+        "path": "./grammars/flux.tmLanguage.json"
+      },
+      {
+        "language": "flux",
+        "scopeName": "source.flux.assembly",
+        "path": "./grammars/flux.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "FLUX LSP",
+      "properties": {
+        "flux-lsp.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the FLUX language server."
+        },
+        "flux-lsp.maxNumberOfProblems": {
+          "type": "number",
+          "default": 100,
+          "description": "Controls the maximum number of problems produced by the server."
+        },
+        "flux-lsp.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable diagnostic validation (unknown opcodes, invalid registers, etc.)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "vscode:prepublish": "npm run build",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "@types/jest": "^29.5.11",
+    "eslint": "^8.56.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SuperInstance/flux-lsp"
   }
 }
