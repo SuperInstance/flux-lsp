@@ -1,5 +1,6 @@
 # flux-lsp
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 **Language Server Protocol implementation for FLUX assembly.** Provides IDE features for `.flux.md` and `.flux` files across all editors.
 
 ## Features
