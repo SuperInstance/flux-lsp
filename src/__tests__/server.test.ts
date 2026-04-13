@@ -29,6 +29,12 @@ class MockConnection {
         foldingRange: {
             on: () => {},
         },
+        semanticTokens: {
+            on: () => {},
+        },
+        prepareRename: {
+            on: () => {},
+        },
     };
 
     onCompletion = () => {};
@@ -37,6 +43,9 @@ class MockConnection {
     onDefinition = () => {};
     onDocumentSymbol = () => {};
     onReferences = () => {};
+    onSignatureHelp = () => {};
+    onWorkspaceSymbol = () => {};
+    onRename = () => {};
 }
 
 // ─── Helper ─────────────────────────────────────────────────────────────────

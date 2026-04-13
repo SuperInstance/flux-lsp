@@ -3,7 +3,7 @@
  *
  * Validates FLUX assembly source and produces LSP Diagnostics.
  * Checks for: unknown mnemonics, invalid registers, undefined labels,
- * malformed immediates, wrong operand counts, duplicate labels, unused labels.
+ * malformed immediates, wrong operand counts, duplicate labels.
  */
 
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
@@ -188,20 +188,19 @@ export function provideDiagnostics(source: string): Diagnostic[] {
         }
     }
 
-    // Pass 3: unused label warnings
-    const referencedLabels = new Set(labelRefs.map(r => r.name));
-    for (const [name, defLines] of labelDefinitionCounts) {
-        if (!referencedLabels.has(name)) {
-            // Only warn for labels that are not entry points (@start, @main, @entry)
-            const lowerName = name.toLowerCase();
-            if (lowerName !== 'start' && lowerName !== 'main' && lowerName !== 'entry' && lowerName !== '_start') {
-                // Report on the first definition
+    // Pass 3: duplicate label definitions
+    const labelDefs: Map<string, number> = new Map();
+    for (const line of lines) {
+        if (line.label && (line.type === 'label' || line.type === 'opcode')) {
+            if (labelDefs.has(line.label)) {
                 diagnostics.push(makeDiagnostic(
-                    rangeForLine(defLines[0]),
-                    `Label '@${name}' is defined but never referenced`,
-                    DiagnosticSeverity.Hint,
-                    'flux-unused-label',
+                    rangeForLine(line.lineNumber),
+                    `Duplicate label '@${line.label}' (previously defined at line ${labelDefs.get(line.label)! + 1})`,
+                    DiagnosticSeverity.Warning,
+                    'flux-duplicate-label',
                 ));
+            } else {
+                labelDefs.set(line.label, line.lineNumber);
             }
         }
     }

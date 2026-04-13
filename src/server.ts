@@ -1,12 +1,16 @@
 /**
  * FLUX Language Server — Main LSP Server
  *
- * Provides IDE features for .flux.md files:
+ * Provides IDE features for .flux, .fluxasm, and .flux.md files:
  * - Autocomplete for opcodes, registers, directives, labels
  * - Hover documentation for opcodes
  * - Go-to-definition for labels
  * - Document symbols (outline view)
  * - Diagnostics (error detection)
+ * - Semantic tokens (enhanced syntax highlighting)
+ * - Signature help (operand hints)
+ * - Workspace symbol search
+ * - Rename support for labels
  *
  * Communicates via LSP stdio protocol with any editor client.
  */
@@ -34,12 +38,20 @@ import {
     Position,
     Location,
     ReferenceParams,
+    SemanticTokensParams,
+    SemanticTokens,
+    SemanticTokensLegend,
+    SignatureHelpParams,
+    SignatureHelp,
+    WorkspaceSymbolParams,
+    PrepareRenameParams,
+    RenameParams,
 } from 'vscode-languageserver';
 import {
     TextDocument,
 } from 'vscode-languageserver-textdocument';
 
-import { lookupOpcode, formatOpcodeMarkdown, getOpcodeCompletionItems, getRegisterCompletionItems, getDirectiveCompletionItems, lookupDirective, formatDirectiveMarkdown } from './opcode-database';
+import { lookupOpcode, formatOpcodeMarkdown, getOpcodeCompletionItems, getRegisterCompletionItems, getDirectiveCompletionItems, OPCODE_DATABASE, ALL_REGISTERS } from './opcode-database';
 import {
     parseFluxAssembly,
     extractLabels,
@@ -50,6 +62,31 @@ import {
     isRegister,
 } from './parser';
 import { provideDiagnostics } from './diagnostics';
+
+// ─── Semantic Token Types ────────────────────────────────────────────────────
+
+const enum SemanticTokenType {
+    mnemonic = 0,    // keyword/control
+    register = 1,    // variable
+    label = 2,       // function/label definition
+    labelRef = 3,    // reference to label
+    number = 4,      // number/immediate
+    comment = 5,     // comment
+    directive = 6,   // macro/preprocessor
+}
+
+const FLUX_SEMANTIC_TOKENS_LEGEND: SemanticTokensLegend = {
+    tokenTypes: [
+        'keyword',      // mnemonic
+        'variable',      // register
+        'function',      // label definition
+        'variable',      // label reference
+        'number',        // number/immediate
+        'comment',       // comment
+        'keyword',       // directive
+    ],
+    tokenModifiers: [],
+};
 
 // ─── Server Class ───────────────────────────────────────────────────────────
 
@@ -80,15 +117,312 @@ export class FluxLanguageServer {
                 documentSymbolProvider: true,
                 referencesProvider: true,
                 codeActionProvider: undefined,
-                renameProvider: undefined,
                 foldingRangeProvider: true,
-                workspaceSymbolProvider: false,
+                workspaceSymbolProvider: true,
+                semanticTokensProvider: {
+                    legend: FLUX_SEMANTIC_TOKENS_LEGEND,
+                    full: true,
+                    range: true,
+                },
+                signatureHelpProvider: {
+                    triggerCharacters: [' ', ','],
+                    retriggerCharacters: [','],
+                },
+                renameProvider: {
+                    prepareProvider: true,
+                },
             },
         };
 
         this.connection.console.info('FLUX LSP initialized');
         this.connection.console.info(`Client: ${params.clientInfo?.name || 'unknown'}`);
         return result;
+    }
+
+    /**
+     * Check if a URI is a flux assembly file (.flux, .fluxasm, .s.flux, but not .flux.md).
+     */
+    private isFluxAsmUri(uri: string): boolean {
+        return uri.endsWith('.flux') || uri.endsWith('.fluxasm') || uri.endsWith('.s.flux');
+    }
+
+    /**
+     * Check if a URI is a flux markdown file (.flux.md).
+     */
+    private isFluxMdUri(uri: string): boolean {
+        return uri.endsWith('.flux.md');
+    }
+
+    // ─── Semantic Tokens ──────────────────────────────────────────────────
+
+    private async onSemanticTokens(params: SemanticTokensParams): Promise<SemanticTokens> {
+        const uri = params.textDocument.uri;
+        const lines = this.getParsedLines(uri);
+        const tokens: number[] = [];
+        let prevLine = 0;
+        let prevChar = 0;
+
+        for (const line of lines) {
+            if (line.type === 'opcode' && line.mnemonic) {
+                const col = line.mnemonicRange?.start.character ?? 0;
+                tokens.push(
+                    line.lineNumber - prevLine,
+                    col - prevChar,
+                    line.mnemonic.length,
+                    SemanticTokenType.mnemonic,
+                    0,
+                );
+                prevLine = line.lineNumber;
+                prevChar = col;
+            }
+
+            if (line.label) {
+                const labelIdx = line.lineText.indexOf(`@${line.label}`);
+                if (labelIdx >= 0) {
+                    tokens.push(
+                        line.lineNumber - prevLine,
+                        labelIdx - prevChar,
+                        line.label.length + 1,
+                        SemanticTokenType.label,
+                        0,
+                    );
+                    prevLine = line.lineNumber;
+                    prevChar = labelIdx;
+                }
+            }
+
+            // Colorize registers in operands
+            if (line.operands) {
+                for (const op of line.operands) {
+                    if (isRegister(op)) {
+                        const opIdx = line.lineText.indexOf(op, line.mnemonicRange?.end.character ?? 0);
+                        if (opIdx >= 0) {
+                            tokens.push(
+                                line.lineNumber - prevLine,
+                                opIdx - prevChar,
+                                op.length,
+                                SemanticTokenType.register,
+                                0,
+                            );
+                            prevLine = line.lineNumber;
+                            prevChar = opIdx;
+                        }
+                    }
+                    // Colorize label references in operands
+                    const labelMatch = op.match(/^@(\w+)$/);
+                    if (labelMatch) {
+                        const opIdx = line.lineText.indexOf(op, line.mnemonicRange?.end.character ?? 0);
+                        if (opIdx >= 0) {
+                            tokens.push(
+                                line.lineNumber - prevLine,
+                                opIdx - prevChar,
+                                op.length,
+                                SemanticTokenType.labelRef,
+                                0,
+                            );
+                            prevLine = line.lineNumber;
+                            prevChar = opIdx;
+                        }
+                    }
+                }
+            }
+
+            // Colorize immediates in operands
+            if (line.operands) {
+                for (const op of line.operands) {
+                    if (/^[+-]?(0[xX][0-9a-fA-F]+|0[bB][01]+|\d+)$/.test(op) && !isRegister(op)) {
+                        const opIdx = line.lineText.indexOf(op, line.mnemonicRange?.end.character ?? 0);
+                        if (opIdx >= 0) {
+                            tokens.push(
+                                line.lineNumber - prevLine,
+                                opIdx - prevChar,
+                                op.length,
+                                SemanticTokenType.number,
+                                0,
+                            );
+                            prevLine = line.lineNumber;
+                            prevChar = opIdx;
+                        }
+                    }
+                }
+            }
+        }
+
+        return { data: tokens };
+    }
+
+    // ─── Signature Help ───────────────────────────────────────────────────
+
+    private async onSignatureHelp(params: SignatureHelpParams): Promise<SignatureHelp | null> {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return null;
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word) return null;
+
+        const info = lookupOpcode(word.toUpperCase());
+        if (!info || info.operands.length === 0) return null;
+
+        const paramLabels = info.operands.map(op => {
+            if (op.role === '-') return '—';
+            return `*${op.role}*: ${op.description}`;
+        });
+
+        return {
+            signatures: [
+                {
+                    label: `${info.mnemonic} ${info.operands.map(op => op.role === '-' ? '—' : op.role).join(', ')}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${info.mnemonic}** — ${info.description}\n\nFormat: ${info.format} | Category: ${info.category}\n\nParameters:\n${paramLabels.map(p => `- ${p}`).join('\n')}`,
+                    },
+                    parameters: info.operands.map(op => ({
+                        label: op.role === '-' ? '—' : op.role,
+                    })),
+                },
+            ],
+            activeSignature: 0,
+        };
+    }
+
+    // ─── Workspace Symbols ───────────────────────────────────────────────
+
+    private async onWorkspaceSymbols(params: WorkspaceSymbolParams): Promise<any[]> {
+        const results: any[] = [];
+        const query = params.query.toLowerCase();
+
+        // Search opcodes
+        for (const [mn, info] of OPCODE_DATABASE) {
+            if (mn.toLowerCase().includes(query) || info.description.toLowerCase().includes(query)) {
+                results.push({
+                    name: mn,
+                    kind: SymbolKind.Function,
+                    detail: `${info.category} — ${info.description}`,
+                    data: { type: 'opcode', mnemonic: mn },
+                });
+            }
+        }
+
+        // Search labels from all cached documents
+        for (const [uri, lines] of this.parsedCache) {
+            const labels = extractLabels(lines);
+            for (const [name, lineNum] of labels) {
+                if (name.toLowerCase().includes(query)) {
+                    results.push({
+                        name: `@${name}`,
+                        kind: SymbolKind.Field,
+                        detail: `Label in ${uri.split('/').pop()}:${lineNum + 1}`,
+                        location: {
+                            uri,
+                            range: {
+                                start: { line: lineNum, character: 0 },
+                                end: { line: lineNum, character: 999 },
+                            },
+                        },
+                    });
+                }
+            }
+
+            // Search sections from all cached documents
+            const sections = extractSections(lines);
+            for (const section of sections) {
+                if (section.name.toLowerCase().includes(query)) {
+                    results.push({
+                        name: `${section.type}: ${section.name}`,
+                        kind: this.sectionToSymbolKind(section.type),
+                        detail: `Section in ${uri.split('/').pop()}`,
+                        location: {
+                            uri,
+                            range: {
+                                start: section.position,
+                                end: { line: section.position.line, character: 999 },
+                            },
+                        },
+                    });
+                }
+            }
+        }
+
+        return results.slice(0, 50); // Limit results
+    }
+
+    // ─── Rename Support ───────────────────────────────────────────────────
+
+    private async onPrepareRename(params: PrepareRenameParams): Promise<Range | null> {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return null;
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word) return null;
+
+        // Only labels can be renamed
+        if (word.startsWith('@')) {
+            const line = doc.getText(Range.create(
+                Position.create(params.position.line, 0),
+                Position.create(params.position.line, 999),
+            ));
+            const match = word.match(/^@(\w+)/);
+            if (match) {
+                const startChar = line.indexOf(word);
+                return {
+                    start: { line: params.position.line, character: startChar + 1 },
+                    end: { line: params.position.line, character: startChar + 1 + match[1].length },
+                };
+            }
+        }
+
+        return null;
+    }
+
+    private async onRename(params: RenameParams): Promise<any> {
+        const uri = params.textDocument.uri;
+        const doc = this.documents.get(uri);
+        if (!doc) return null;
+
+        const word = this.getWordAtPosition(doc, params.position);
+        if (!word || !word.startsWith('@')) return null;
+
+        const labelName = word.slice(1);
+        const lines = this.getParsedLines(uri);
+        const labels = extractLabels(lines);
+
+        if (!labels.has(labelName)) return null;
+
+        const changes: Record<string, any[]> = {};
+        const uriChanges: any[] = [];
+
+        // Rename the definition
+        const defLine = labels.get(labelName)!;
+        const defText = lines[defLine].lineText;
+        const defIdx = defText.indexOf(`@${labelName}`);
+        if (defIdx >= 0) {
+            uriChanges.push({
+                range: {
+                    start: { line: defLine, character: defIdx + 1 },
+                    end: { line: defLine, character: defIdx + 1 + labelName.length },
+                },
+                newText: params.newName,
+            });
+        }
+
+        // Rename all references
+        const labelRefs = extractLabelReferences(lines);
+        for (const ref of labelRefs) {
+            if (ref.name === labelName) {
+                uriChanges.push({
+                    range: {
+                        start: { line: ref.line, character: ref.col + 1 },
+                        end: { line: ref.line, character: ref.col + 1 + labelName.length },
+                    },
+                    newText: params.newName,
+                });
+            }
+        }
+
+        changes[uri] = uriChanges;
+        return { changes };
     }
 
     /**
@@ -117,6 +451,19 @@ export class FluxLanguageServer {
 
         // Find references
         this.connection.onReferences((params) => this.onReferences(params));
+
+        // Semantic tokens
+        this.connection.languages.semanticTokens.on((params) => this.onSemanticTokens(params));
+
+        // Signature help
+        this.connection.onSignatureHelp((params) => this.onSignatureHelp(params));
+
+        // Workspace symbols
+        this.connection.onWorkspaceSymbol((params) => this.onWorkspaceSymbols(params));
+
+        // Rename support (using type assertion for API compatibility)
+        (this.connection.languages as any).prepareRename?.on?.((params: any) => this.onPrepareRename(params));
+        (this.connection as any).onRename?.((params: any) => this.onRename(params));
     }
 
     /**

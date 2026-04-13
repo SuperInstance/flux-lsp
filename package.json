@@ -21,7 +21,8 @@
   ],
   "activationEvents": [
     "onLanguage:flux.md",
-    "onLanguage:flux"
+    "onLanguage:flux",
+    "onLanguage:fluxasm"
   ],
   "contributes": {
     "languages": [
@@ -41,13 +42,8 @@
       },
       {
         "id": "flux",
-        "aliases": [
-          "FLUX Assembly"
-        ],
-        "extensions": [
-          ".flux",
-          ".s.flux"
-        ],
+        "aliases": ["FLUX Assembly"],
+        "extensions": [".flux", ".s.flux", ".fluxasm"],
         "configuration": "./language-configuration.json"
       }
     ],
