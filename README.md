@@ -1,191 +1,261 @@
-# flux-lsp
+# FLUX LSP — Language Server Protocol for .fluxasm
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-**Language Server Protocol implementation for FLUX assembly.** Provides IDE features for `.flux.md` and `.flux` files across all editors.
+**Task T-006** | **Fleet**: SuperInstance/Cocapn | **ISA**: FLUX v1.0/v3.0
+
+A complete Language Server Protocol implementation for FLUX ISA assembly files (`.fluxasm`). Provides real-time intelligence for editing, debugging, and developing FLUX assembly programs.
+
+---
 
 ## Features
 
-- **Autocomplete** — All 247 FLUX opcodes organized by category, 53 registers (R0-R15, F0-F15, V0-V15, SP/FP/LR/PC/FLAGS), 20 assembler directives, and document-local labels with snippet expansion
-- **Hover Documentation** — Hover over any opcode to see its description, format, encoding size, operand types, and conformance status. Hover over registers for alias information
-- **Diagnostics** — Real-time validation: unknown mnemonics, invalid register numbers (R16+), undefined label references, malformed immediate values, out-of-range immediates (imm8/imm16), wrong operand counts
-- **Go-to-Definition** — Ctrl+Click on a label reference (`@loop`) to jump to its definition
-- **Document Symbols** — Outline view showing all sections (`## fn:`, `## agent:`, `## tile:`, etc.) and their nested labels
-- **Folding** — Fold sections and code blocks in `.flux.md` files
-- **Syntax Highlighting** — TextMate grammar for FLUX Markdown (fn:, agent:, tile:, #! directives, registers, immediates, comments)
+### Diagnostics
+- **Unknown opcode detection** — with Levenshtein-based typo suggestions
+- **Invalid register format** — out-of-range indices (e.g. R16), wrong register type
+- **Wrong operand count** — validates against instruction format specification
+- **Duplicate label detection** — flags redefined labels with reference to first occurrence
+- **Missing HALT check** — warns when `.text` section lacks termination
+- **Unresolved label references** — flags jumps/calls to undefined labels
+- **Invalid directives** — catches unknown assembly directives
 
-## Architecture
+### Hover Information
+- **Opcode hover** — name, hex code, format, encoding size, operand types, flags affected, detailed description
+- **Register hover** — type (int/float/SIMD), width, index, description
+- **Directive hover** — syntax, description, detailed documentation
+- **Label hover** — definition location, reference count, referencing instructions
 
+### Autocomplete
+- **Opcode mnemonics** — with snippet-based operand placeholders and tab stops
+- **Register names** — R0–R15 (int), F0–F15 (float), V0–V15 (SIMD)
+- **Directives** — `.byte`, `.word`, `.org`, `.text`, `.data`, and 12 more
+- **Label references** — labels defined in current document
+- **Context-aware** — different completions at line start vs. operand position
+
+### Go-to-Definition
+- **Label references → definitions** — jump from usage to label definition
+- **Cross-file resolution** — workspace-wide label index for multi-file projects
+- **Label definitions** — click on label def to see its location
+
+### Document Symbols
+- **Labels** — listed as navigable symbols
+- **Sections** — `.text`, `.data`, `.bss` sections
+
+---
+
+## FLUX ISA Overview
+
+The FLUX ISA v1.0/v3.0 is a 256-slot instruction set featuring:
+
+| Property | Value |
+|----------|-------|
+| Encoding | Variable-length (1–5 bytes), little-endian |
+| Register File | 64 registers: R0–R15 (int32), F0–F15 (float), V0–V15 (128-bit SIMD) |
+| Formats | A(1B), B(2B), C(3B), D(4B+i16), E(4B 3-reg), G(variable) |
+| Arithmetic | Three-operand: `OP rd, rs, rt` |
+
+### Opcode Groups
+
+| Range | Group | Examples |
+|-------|-------|---------|
+| 0x00–0x07 | Control | NOP, MOV, LOAD, STORE, JMP, JZ, JNZ, CALL |
+| 0x08–0x0F | Integer Arith | IADD, ISUB, IMUL, IDIV, IMOD, INEG, INC, DEC |
+| 0x10–0x17 | Bitwise | IAND, IOR, IXOR, INOT, ISHL, ISHR, ROTL, ROTR |
+| 0x18–0x1F | Compare | ICMP, IEQ, ILT, ILE, IGT, IGE, TEST, SETCC |
+| 0x20–0x27 | Stack | PUSH, POP, DUP, SWAP, ROT, ENTER, LEAVE, ALLOCA |
+| 0x28–0x2F | Function | RET, CALL_IND, TAILCALL, MOVI, IREM, CMP, JE, JNE |
+| 0x30–0x37 | Memory | REGION_CREATE/DESTROY/TRANSFER, MEMCOPY/SET/CMP |
+| 0x38–0x3F | Type | CAST, BOX, UNBOX, CHECK_TYPE, CHECK_BOUNDS |
+| 0x40–0x4F | Float/SIMD | FADD..FGE, VLOAD/VSTORE/VADD/VSUB/VMUL/VDIV/VFMA |
+| 0x60–0x6F | A2A | TELL, ASK, DELEGATE, BROADCAST, TRUST, CAP, BARRIER |
+| 0x70–0x7B | Viewpoint | Babel multilingual perspective operations |
+| 0x80–0x89 | System | HALT, YIELD, RESOURCE_ACQUIRE/RELEASE, DEBUG_BREAK |
+| 0xA0–0xB2 | Confidence | C_IADD, C_ISUB, C_IMUL, C_MOV, C_TELL, C_ASK, ... |
+| 0xC0–0xEF | Extended | MOVI32, LOAD8/16, STORE8/16, CLZ, CTZ, POPCNT |
+| 0xF0–0xFF | Special | CLI, STI, HCF, RDTSC, MFENCE, LFENCE, SFENCE |
+
+---
+
+## .fluxasm File Format
+
+```fluxasm
+; Euclidean GCD — FLUX ISA
+.text
+    MOV R0, 48      ; a = 48
+    MOV R1, 18      ; b = 18
+loop:
+    ICMP R0, R1     ; compare a, b
+    JE done          ; if equal, done
+    IGT R0, R1      ; a > b?
+    JZ swap         ; if not, swap
+    ISUB R0, R1     ; a = a - b
+    JMP loop
+swap:
+    ISUB R1, R0     ; b = b - a
+    JMP loop
+done:
+    HALT
 ```
-flux-lsp/
-├── src/
-│   ├── index.ts            # Entry point — creates connection, starts server
-│   ├── server.ts           # Main LSP server (completion, hover, definition, symbols)
-│   ├── opcode-database.ts  # Complete opcode reference (247 opcodes from ISA_UNIFIED.md)
-│   ├── parser.ts           # FLUX assembly parser (labels, opcodes, directives, sections)
-│   └── diagnostics.ts      # Diagnostic provider (validation engine)
-├── grammars/
-│   └── flux.tmLanguage.json # TextMate grammar for syntax highlighting
-├── docs/
-│   └── grammar-spec.md      # Full grammar specification (1163 lines)
-├── language-configuration.json
-├── package.json
-├── tsconfig.json
-└── README.md
-```
 
-### Module Responsibilities
+### Syntax Elements
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `opcode-database.ts` | ~530 | Complete FLUX ISA reference: all 247 opcodes with hex encoding, format (A-G), operand types, descriptions, categories. Generates LSP CompletionItems for opcodes, registers, directives. |
-| `parser.ts` | ~230 | Parses FLUX assembly into `ParsedLine` objects. Extracts labels, sections, label references. Validates register/immediate/label-ref syntax. |
-| `diagnostics.ts` | ~160 | Two-pass diagnostic engine: (1) per-line checks for unknown mnemonics, wrong operand counts, register range, immediate range; (2) undefined label references across document. |
-| `server.ts` | ~490 | Main LSP server class. Handles completion (context-aware: opcode position vs operand position), hover (opcode docs, register info, labels), go-to-definition (labels, sections), document symbols (sections + nested labels), folding ranges. Filters diagnostics to flux code blocks in .flux.md. |
-| `index.ts` | ~40 | Entry point. Creates stdio connection, text document manager, instantiates FluxLanguageServer. |
+- **Comments**: `;` to end of line
+- **Labels**: identifier followed by `:`
+- **Directives**: `.text`, `.data`, `.byte`, `.word`, `.org`, etc.
+- **Instructions**: `MNEMONIC operand, operand, ...`
+- **Registers**: `R0`–`R15` (int), `F0`–`F15` (float), `V0`–`V15` (SIMD)
+- **Immediates**: decimal (`42`), hex (`0xFF`), binary (`0b1010`)
 
-## Supported File Types
+---
 
-### `.flux.md` — FLUX Markdown (primary)
-Markdown-native source format combining documentation with executable code blocks. Sections define functions, agents, tiles, regions. Code blocks (` ```flux `) contain assembly validated by the LSP.
+## Installation
 
-```markdown
-## fn: factorial(n: i32) -> i32
-
-```flux
-@start:
-  MOVI R1, 1        ; acc = 1
-@loop:
-  CMP_EQ R3, R0, 1
-  JNZ R3, @exit
-  MUL R1, R1, R0
-  DEC R0
-  JMP @loop
-@exit:
-  MOV R0, R1
-  HALT
-```
-```
-
-### `.flux` — Plain FLUX Assembly
-Standalone assembly files with full LSP support (diagnostics, completion, hover).
-
-```flux
-; GCD of R0 and R1
-@loop:
-  CMP_EQ R2, R1, 0
-  JNZ R2, @done
-  MOD R2, R0, R1
-  MOV R0, R1
-  MOV R1, R2
-  JMP @loop
-@done:
-  HALT
-```
-
-## Building and Installing
-
-### Prerequisites
-- Node.js 18+
-- npm 9+
-
-### Build
+### Building from Source
 
 ```bash
-cd flux-lsp
+cd phase1/T-006-flux-lsp
 npm install
 npm run build
 ```
 
-### VS Code
+### VS Code Extension
 
-1. Clone the repo and build:
-   ```bash
-   git clone https://github.com/SuperInstance/flux-lsp.git
-   cd flux-lsp
-   npm install && npm run build
-   ```
-2. Open in VS Code as a workspace folder
-3. Press F5 to launch Extension Development Host
-4. Open a `.flux.md` file to test
+1. Copy the `client/` directory into your VS Code extension project
+2. Add the FLUX language contribution point to your `package.json`:
 
-### Neovim
-
-```lua
--- Using nvim-lspconfig (lazy.nvim)
-require('lspconfig').flux_lsp.setup {
-  cmd = { 'node', '/path/to/flux-lsp/dist/index.js' },
-  filetypes = { 'flux.md', 'flux' },
-  root_dir = require('lspconfig').util.root_pattern('.git', 'flux-lsp'),
+```json
+{
+  "contributes": {
+    "languages": [{
+      "id": "fluxasm",
+      "extensions": [".fluxasm"],
+      "aliases": ["FLUX Assembly", "fluxasm"]
+    }],
+    "configuration": {
+      "type": "object",
+      "title": "FLUX LSP",
+      "properties": {
+        "fluxLsp.maxNumberOfProblems": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of diagnostics"
+        }
+      }
+    }
+  }
 }
 ```
 
-### Helix
+### Running the Server Standalone
 
-Add to `~/.config/helix/languages.toml`:
-
-```toml
-[language-server.flux-lsp]
-command = "node"
-args = ["/path/to/flux-lsp/dist/index.js"]
-
-[[language]]
-name = "flux"
-scope = "source.flux"
-file-types = ["flux", "flux.md"]
-roots = []
-language-servers = ["flux-lsp"]
+```bash
+node dist/server.js --stdio
 ```
 
-### Emacs (eglot)
+---
 
-```elisp
-(add-to-list 'eglot-server-programs
-  '(("\\.flux\\.md\\'" . ("node" "/path/to/flux-lsp/dist/index.js"))))
+## Architecture
+
+```
+┌─────────────────────────────────────┐
+│         VS Code Extension           │
+│         (client/extension.ts)       │
+│  ┌───────────────────────────────┐  │
+│  │  LanguageClient (LSP client)  │  │
+│  └──────────┬────────────────────┘  │
+└─────────────┼───────────────────────┘
+              │ stdio / ipc
+┌─────────────┼───────────────────────┐
+│  FLUX LSP Server                    │
+│  (src/server.ts)                    │
+│  ┌──────────────────────────────┐   │
+│  │  Document Manager            │   │
+│  │  ┌──────────────────────┐    │   │
+│  │  │  parser.ts           │    │   │
+│  │  │  ├─ Tokenizer        │    │   │
+│  │  │  ├─ AST Builder      │    │   │
+│  │  │  └─ Position Helpers │    │   │
+│  │  └──────────┬───────────┘    │   │
+│  │             │                │   │
+│  │  ┌──────────┴───────────┐    │   │
+│  │  │  opcode_db.ts        │    │   │
+│  │  │  (247+ opcodes)      │    │   │
+│  │  └──────────┬───────────┘    │   │
+│  │             │                │   │
+│  │  ┌─────────┴────────────┐    │   │
+│  │  │ Feature Providers    │    │   │
+│  │  │ ├─ diagnostics.ts    │    │   │
+│  │  │ ├─ hover.ts          │    │   │
+│  │  │ ├─ completion.ts     │    │   │
+│  │  │ └─ definition.ts     │    │   │
+│  │  └─────────────────────-┘    │   │
+│  └──────────────────────────────┘   │
+└─────────────────────────────────────┘
 ```
 
-## Opcode Coverage
+### Module Responsibilities
 
-The LSP covers all 247 defined opcodes from the FLUX Unified ISA:
+| Module | Responsibility |
+|--------|---------------|
+| `server.ts` | LSP connection, document lifecycle, request routing |
+| `parser.ts` | Tokenization, AST construction, position mapping |
+| `opcode_db.ts` | Complete FLUX ISA opcode/register/directive database |
+| `diagnostics.ts` | Syntax validation, semantic checking, error reporting |
+| `hover.ts` | Context-sensitive hover documentation |
+| `completion.ts` | Autocomplete with snippets and context detection |
+| `definition.ts` | Go-to-definition, workspace index, symbol extraction |
 
-| Category | Range | Count | Examples |
-|----------|-------|-------|---------|
-| System Control | 0x00–0x07 | 8 | HALT, NOP, RET, BRK |
-| Single Register | 0x08–0x0F | 8 | INC, DEC, NOT, PUSH, POP |
-| Immediate Only | 0x10–0x17 | 8 | SYS, TRAP, DBG, YIELD |
-| Register + Imm8 | 0x18–0x1F | 8 | MOVI, ADDI, SUBI, SHLI |
-| Integer Arithmetic | 0x20–0x2F | 16 | ADD, SUB, MUL, DIV, CMP_* |
-| Float/Memory/Control | 0x30–0x3F | 16 | FADD, LOAD, STORE, MOV, JZ |
-| Register + Imm16 | 0x40–0x47 | 8 | MOVI16, JMP, JAL, LOOP |
-| Offset Memory | 0x48–0x4F | 8 | LOADOFF, STOREOF, COPY, FILL |
-| Agent-to-Agent | 0x50–0x5F | 16 | TELL, ASK, DELEG, FORK |
-| Confidence-Aware | 0x60–0x6F | 16 | C_ADD, C_SUB, C_MERGE |
-| Viewpoint | 0x70–0x7F | 16 | V_EVID, V_EPIST, V_TENSE |
-| Sensor | 0x80–0x8F | 16 | SENSE, GPS, PWM, GPIO |
-| Math/Crypto | 0x90–0x9F | 16 | ABS, SQRT, SHA256, RND |
-| String/Collection | 0xA0–0xAF | 16 | LEN, CONCAT, SORT, HASH |
-| Vector/SIMD | 0xB0–0xBF | 16 | VLOAD, VADD, VDOT, VREDUCE |
-| Tensor/Neural | 0xC0–0xCF | 16 | TMATMUL, TCONV, TRELU, TATTN |
-| Extended Memory | 0xD0–0xDF | 15 | DMA_CPY, MMIO_R, ATOMIC, MALLOC |
-| Long Jumps | 0xE0–0xEF | 12 | JMPL, CALLL, SWITCH, COYIELD |
-| System/Debug | 0xF0–0xFF | 12 | HALT_ERR, ASSERT, DUMP, ILLEGAL |
+---
 
-## Configuration
+## Diagnostic Codes
 
-Settings are available under `flux-lsp.*` in VS Code preferences:
+| Code | Description |
+|------|-------------|
+| `flux-001` | Unknown opcode |
+| `flux-002` | Invalid register (out of range) |
+| `flux-003` | Wrong operand count |
+| `flux-004` | Duplicate label definition |
+| `flux-005` | Unresolved label reference |
+| `flux-006` | Missing HALT instruction |
+| `flux-007` | Invalid directive |
+| `flux-008` | Invalid immediate value |
+| `flux-009` | Wrong operand type |
+| `flux-010` | Operand value out of range |
+| `flux-011` | Section after code |
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `flux-lsp.trace.server` | `off` | Trace level (off/messages/verbose) |
-| `flux-lsp.maxNumberOfProblems` | `100` | Max diagnostics per file |
-| `flux-lsp.diagnostics.enable` | `true` | Enable/disable validation |
+---
 
-## Related
+## Development
 
-- [flux-spec](https://github.com/SuperInstance/flux-spec) — Language specification
-- [flux-runtime](https://github.com/SuperInstance/flux-runtime) — Runtime and ISA definition
-- [flux-ide](https://github.com/SuperInstance/flux-ide) — Web IDE (primary consumer)
-- [ISA_UNIFIED.md](https://github.com/SuperInstance/flux-runtime/blob/main/docs/ISA_UNIFIED.md) — Complete opcode table
+```bash
+# Install dependencies
+npm install
+
+# Build TypeScript
+npm run build
+
+# Watch for changes
+npm run watch
+
+# Type-check only
+npm run lint
+
+# Run server
+npm run server
+```
+
+---
+
+## Fleet Context
+
+- **Instance**: SuperInstance/Cocapn
+- **Task**: T-006 — FLUX LSP Implementation
+- **ISA**: FLUX v1.0/v3.0
+- **Capabilities**: diagnostics, hover, completion, definition, document-symbol
+- **Opcode Coverage**: 247+ opcodes across 14 categories
+- **Register Support**: R0–R15, F0–F15, V0–V15 (48 named + validation)
+- **Directive Support**: 18 assembly directives
+
+---
 
 ## License
 
-MIT
+Internal — SuperInstance/Cocapn Fleet

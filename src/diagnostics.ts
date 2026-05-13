@@ -1,253 +1,429 @@
 /**
- * FLUX Diagnostic Provider
+ * diagnostics.ts — Diagnostic provider for .fluxasm files
  *
- * Validates FLUX assembly source and produces LSP Diagnostics.
- * Checks for: unknown mnemonics, invalid registers, undefined labels,
- * malformed immediates, wrong operand counts, duplicate labels, unused labels.
+ * Validates parsed documents and produces LSP diagnostics for:
+ * - Unknown opcodes
+ * - Invalid register format / index out of range
+ * - Wrong operand count for instruction format
+ * - Duplicate label definitions
+ * - Missing HALT / termination instruction
+ * - Unresolved label references
+ * - Invalid directives
+ * - Section placement issues
  */
 
-import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import {
-    parseFluxAssembly,
-    extractLabels,
-    extractLabelReferences,
-    validateOperandCount,
-    isRegister,
-    isImmediate,
-    isLabelRef,
-    ParsedLine,
-} from './parser';
-import { lookupOpcode } from './opcode-database';
+  Diagnostic,
+  DiagnosticSeverity,
+  Range,
+} from "vscode-languageserver-protocol";
+import { ParseResult, InstructionNode, LabelDefNode, DirectiveNode, TokenType } from "./parser";
+import { opcodeByName, registerByName } from "./opcode_db";
 
-// ─── Main Provider ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Diagnostic codes
+// ---------------------------------------------------------------------------
 
-/**
- * Validate a FLUX assembly document and return diagnostics.
- *
- * @param source Full document text
- * @returns Array of LSP Diagnostics
- */
-export function provideDiagnostics(source: string): Diagnostic[] {
-    const lines = parseFluxAssembly(source);
-    const labels = extractLabels(lines);
-    const labelRefs = extractLabelReferences(lines);
-    const diagnostics: Diagnostic[] = [];
+export const DiagnosticCode = {
+  UNKNOWN_OPCODE:        "flux-001",
+  INVALID_REGISTER:      "flux-002",
+  WRONG_OPERAND_COUNT:   "flux-003",
+  DUPLICATE_LABEL:       "flux-004",
+  UNRESOLVED_LABEL:      "flux-005",
+  MISSING_HALT:          "flux-006",
+  INVALID_DIRECTIVE:     "flux-007",
+  INVALID_IMMEDIATE:     "flux-008",
+  WRONG_OPERAND_TYPE:    "flux-009",
+  OPERAND_OUT_OF_RANGE:  "flux-010",
+  SECTION_AFTER_CODE:    "flux-011",
+} as const;
 
-    // Pass 0: duplicate label detection
-    const labelDefinitionCounts = new Map<string, number[]>();
-    for (const line of lines) {
-        if (line.label && (line.type === 'label' || line.type === 'opcode')) {
-            const existing = labelDefinitionCounts.get(line.label) || [];
-            existing.push(line.lineNumber);
-            labelDefinitionCounts.set(line.label, existing);
-        }
-    }
-    for (const [name, occurrences] of labelDefinitionCounts) {
-        if (occurrences.length > 1) {
-            for (const lineNum of occurrences) {
-                diagnostics.push(makeDiagnostic(
-                    rangeForLine(lineNum),
-                    `Duplicate label definition '@${name}'`,
-                    DiagnosticSeverity.Error,
-                    'flux-duplicate-label',
-                ));
-            }
-        }
-    }
+// ---------------------------------------------------------------------------
+// Helper to build ranges
+// ---------------------------------------------------------------------------
 
-    // Pass 1: per-line checks (mnemonics, registers, immediates, operand count)
-    for (const line of lines) {
-        if (line.type === 'opcode' && line.mnemonic) {
-            // Unknown mnemonic
-            const opcodeInfo = lookupOpcode(line.mnemonic);
-            if (!opcodeInfo) {
-                diagnostics.push(makeDiagnostic(
-                    line.mnemonicRange || rangeForLine(line.lineNumber),
-                    `Unknown mnemonic '${line.mnemonic}'`,
-                    DiagnosticSeverity.Error,
-                    'flux-unknown-mnemonic',
-                ));
-                continue; // Skip further checks for unknown mnemonics
-            }
-
-            // Operand count validation
-            const operandCount = line.operands ? line.operands.length : 0;
-            const operandIssue = validateOperandCount(line.mnemonic, operandCount);
-            if (operandIssue) {
-                diagnostics.push(makeDiagnostic(
-                    rangeForLine(line.lineNumber),
-                    operandIssue,
-                    DiagnosticSeverity.Error,
-                    'flux-operand-count',
-                ));
-            }
-
-            // Per-operand validation
-            if (line.operands) {
-                const expectedOps = opcodeInfo.operands;
-                for (let i = 0; i < Math.min(line.operands.length, expectedOps.length); i++) {
-                    const op = line.operands[i];
-                    const expected = expectedOps[i];
-
-                    // Skip unused operand slots
-                    if (expected.role === '-' || op === '-') continue;
-
-                    // Label references in operand positions
-                    if (isLabelRef(op)) continue;
-
-                    // String literals (e.g., SYS "hello")
-                    if (op.startsWith('"') && op.endsWith('"')) continue;
-
-                    // Expected register
-                    if (expected.role === 'rd' || expected.role === 'rs1' || expected.role === 'rs2') {
-                        if (!isRegister(op)) {
-                            // Could be an immediate being used where register expected
-                            // or an unknown identifier — only warn if it looks like neither
-                            if (!isImmediate(op)) {
-                                diagnostics.push(makeDiagnostic(
-                                    rangeForLine(line.lineNumber),
-                                    `Expected register, got '${op}' (operand ${i + 1} of ${line.mnemonic})`,
-                                    DiagnosticSeverity.Error,
-                                    'flux-invalid-register',
-                                ));
-                            }
-                        } else {
-                            // Register exists — check for R16+ (out of range)
-                            const regMatch = op.match(/^[RFV](\d+)$/);
-                            if (regMatch) {
-                                const num = parseInt(regMatch[1]);
-                                if (num > 15) {
-                                    diagnostics.push(makeDiagnostic(
-                                        rangeForLine(line.lineNumber),
-                                        `Register ${op} out of range (valid: 0-15)`,
-                                        DiagnosticSeverity.Error,
-                                        'flux-register-range',
-                                    ));
-                                }
-                            }
-                        }
-                    }
-
-                    // Expected immediate
-                    if (expected.role === 'imm8' || expected.role === 'imm16') {
-                        if (!isImmediate(op) && !isRegister(op)) {
-                            // Allow registers as immediates in some contexts (pseudo-instructions)
-                            // But warn about malformed numbers
-                            if (op.match(/^\d/) && !isImmediate(op)) {
-                                diagnostics.push(makeDiagnostic(
-                                    rangeForLine(line.lineNumber),
-                                    `Malformed immediate value '${op}' (operand ${i + 1} of ${line.mnemonic})`,
-                                    DiagnosticSeverity.Error,
-                                    'flux-malformed-immediate',
-                                ));
-                            }
-                        } else if (isImmediate(op)) {
-                            // Range check for imm8
-                            if (expected.role === 'imm8') {
-                                const val = parseImmediate(op);
-                                if (val < -128 || val > 255) {
-                                    diagnostics.push(makeDiagnostic(
-                                        rangeForLine(line.lineNumber),
-                                        `Immediate value ${op} out of range for imm8 (-128 to 255)`,
-                                        DiagnosticSeverity.Warning,
-                                        'flux-immediate-range',
-                                    ));
-                                }
-                            }
-                            // Range check for imm16
-                            if (expected.role === 'imm16') {
-                                const val = parseImmediate(op);
-                                if (val < -32768 || val > 65535) {
-                                    diagnostics.push(makeDiagnostic(
-                                        rangeForLine(line.lineNumber),
-                                        `Immediate value ${op} out of range for imm16 (-32768 to 65535)`,
-                                        DiagnosticSeverity.Warning,
-                                        'flux-immediate-range',
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Pass 2: undefined label references
-    for (const ref of labelRefs) {
-        if (!labels.has(ref.name)) {
-            diagnostics.push(makeDiagnostic(
-                {
-                    start: { line: ref.line, character: ref.col },
-                    end: { line: ref.line, character: ref.col + ref.name.length + 1 },
-                },
-                `Undefined label '@${ref.name}'`,
-                DiagnosticSeverity.Error,
-                'flux-undefined-label',
-            ));
-        }
-    }
-
-    // Pass 3: unused label warnings
-    const referencedLabels = new Set(labelRefs.map(r => r.name));
-    for (const [name, defLines] of labelDefinitionCounts) {
-        if (!referencedLabels.has(name)) {
-            // Only warn for labels that are not entry points (@start, @main, @entry)
-            const lowerName = name.toLowerCase();
-            if (lowerName !== 'start' && lowerName !== 'main' && lowerName !== 'entry' && lowerName !== '_start') {
-                // Report on the first definition
-                diagnostics.push(makeDiagnostic(
-                    rangeForLine(defLines[0]),
-                    `Label '@${name}' is defined but never referenced`,
-                    DiagnosticSeverity.Hint,
-                    'flux-unused-label',
-                ));
-            }
-        }
-    }
-
-    return diagnostics;
+function tokenRange(line: number, col: number, length: number): Range {
+  return {
+    start: { line, character: col },
+    end:   { line, character: col + length },
+  };
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Main diagnostic computation
+// ---------------------------------------------------------------------------
 
-/**
- * Create a diagnostic with standard settings.
- */
-export function makeDiagnostic(
-    range: Range,
-    message: string,
-    severity: DiagnosticSeverity,
-    code: string | number,
-): Diagnostic {
-    return {
-        range,
-        message,
-        severity,
-        code,
-        source: 'flux-lsp',
-    };
+export function computeDiagnostics(result: ParseResult): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  // Track first occurrence of labels to detect duplicates
+  const seenLabels = new Map<string, { node: LabelDefNode; first: boolean }>();
+
+  // First pass: collect label definitions
+  for (const node of result.nodes) {
+    if (node.kind === "label") {
+      const upper = node.name.text.toUpperCase();
+      if (seenLabels.has(upper)) {
+        seenLabels.get(upper)!.first = false;
+      } else {
+        seenLabels.set(upper, { node, first: true });
+      }
+    }
+  }
+
+  // Check duplicate labels
+  for (const [, entry] of seenLabels) {
+    if (!entry.first) {
+      // We'll catch all duplicates in the second pass
+    }
+  }
+
+  const firstLabelOccurrence = new Map<string, LabelDefNode>();
+
+  // Second pass: validate all nodes
+  for (const node of result.nodes) {
+    switch (node.kind) {
+      case "instruction":
+        validateInstruction(node, diagnostics);
+        break;
+      case "label":
+        validateLabel(node, firstLabelOccurrence, diagnostics);
+        break;
+      case "directive":
+        validateDirective(node, diagnostics);
+        break;
+      case "error":
+        diagnostics.push({
+          range: tokenRange(node.token.line, node.token.col, node.token.length),
+          message: node.message,
+          severity: DiagnosticSeverity.Error,
+          source: "flux-lsp",
+          code: DiagnosticCode.UNKNOWN_OPCODE,
+        });
+        break;
+    }
+  }
+
+  // Check for unresolved label references
+  for (const [refName, refNodes] of result.labelRefs) {
+    if (!result.labels.has(refName)) {
+      for (const instr of refNodes) {
+        for (const op of instr.operands) {
+          if (op.text.toUpperCase() === refName) {
+            diagnostics.push({
+              range: tokenRange(op.line, op.col, op.length),
+              message: `Unresolved label reference: '${op.text}'`,
+              severity: DiagnosticSeverity.Error,
+              source: "flux-lsp",
+              code: DiagnosticCode.UNRESOLVED_LABEL,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Check for missing HALT
+  checkMissingHalt(result, diagnostics);
+
+  return diagnostics;
 }
 
-/**
- * Create a range spanning an entire line.
- */
-export function rangeForLine(line: number): Range {
-    return {
-        start: { line, character: 0 },
-        end: { line, character: 999 },
-    };
+// ---------------------------------------------------------------------------
+// Instruction validation
+// ---------------------------------------------------------------------------
+
+function validateInstruction(node: InstructionNode, diagnostics: Diagnostic[]): void {
+  const mnemonicUpper = node.mnemonic.text.toUpperCase();
+  const entry = opcodeByName.get(mnemonicUpper);
+
+  // Unknown opcode
+  if (!entry) {
+    // Check if it might be a typo — look for similar mnemonics
+    const suggestion = findSimilarMnemonic(mnemonicUpper);
+    const msg = suggestion
+      ? `Unknown opcode: '${node.mnemonic.text}'. Did you mean '${suggestion}'?`
+      : `Unknown opcode: '${node.mnemonic.text}'`;
+
+    diagnostics.push({
+      range: tokenRange(node.mnemonic.line, node.mnemonic.col, node.mnemonic.length),
+      message: msg,
+      severity: DiagnosticSeverity.Error,
+      source: "flux-lsp",
+      code: DiagnosticCode.UNKNOWN_OPCODE,
+    });
+    return;
+  }
+
+  // Validate operand count
+  const expectedCount = entry.operands.length;
+  const actualCount = node.operands.length;
+
+  if (actualCount !== expectedCount) {
+    diagnostics.push({
+      range: tokenRange(node.mnemonic.line, node.mnemonic.col, node.mnemonic.length),
+      message: `Wrong operand count for '${mnemonicUpper}': expected ${expectedCount} (${entry.operandStr}), got ${actualCount}`,
+      severity: DiagnosticSeverity.Error,
+      source: "flux-lsp",
+      code: DiagnosticCode.WRONG_OPERAND_COUNT,
+    });
+  }
+
+  // Validate each operand
+  for (let i = 0; i < node.operands.length; i++) {
+    const op = node.operands[i];
+    validateOperand(op, i, entry, diagnostics);
+  }
 }
 
-/**
- * Parse an immediate value string to a number.
- */
-export function parseImmediate(token: string): number {
-    if (token.startsWith('0x') || token.startsWith('0X')) {
-        return parseInt(token, 16);
+function validateOperand(
+  op: { text: string; line: number; col: number; length: number; type: TokenType },
+  index: number,
+  entry: { operands: string[]; name: string; operandStr: string },
+  diagnostics: Diagnostic[],
+): void {
+  const expectedType = index < entry.operands.length ? entry.operands[index] : null;
+  const upper = op.text.toUpperCase();
+
+  // Check register validity
+  if (expectedType && (expectedType.startsWith("r") || expectedType.startsWith("f") || expectedType.startsWith("v"))) {
+    // This should be a register
+    if (/^[RFV]\d+$/i.test(upper)) {
+      const regInfo = registerByName.get(upper);
+      if (!regInfo) {
+        // Register index out of range (e.g. R16, F20, V20)
+        const match = upper.match(/^([RFV])(\d+)$/);
+        const maxIndex = match ? (match[1] === "R" ? 15 : match[1] === "F" ? 15 : 15) : 15;
+        diagnostics.push({
+          range: tokenRange(op.line, op.col, op.length),
+          message: `Invalid register: '${op.text}'. Register index must be 0–${maxIndex}.`,
+          severity: DiagnosticSeverity.Error,
+          source: "flux-lsp",
+          code: DiagnosticCode.INVALID_REGISTER,
+        });
+        return;
+      }
+
+      // Check register type matches expected
+      const expectedPrefix = expectedType[0].toUpperCase();
+      const actualPrefix = upper[0];
+      if (expectedPrefix !== actualPrefix) {
+        const expectedKind = expectedPrefix === "R" ? "integer" : expectedPrefix === "F" ? "float" : "SIMD";
+        diagnostics.push({
+          range: tokenRange(op.line, op.col, op.length),
+          message: `Wrong register type: expected ${expectedKind} register (${expectedPrefix}0-${expectedPrefix}15), got '${op.text}'`,
+          severity: DiagnosticSeverity.Warning,
+          source: "flux-lsp",
+          code: DiagnosticCode.WRONG_OPERAND_TYPE,
+        });
+      }
+    } else if (!/^-?\d/.test(op.text) && !/^0x/i.test(op.text)) {
+      // Not a register, not an immediate — might be a label or wrong type
+      if (expectedType !== "label") {
+        diagnostics.push({
+          range: tokenRange(op.line, op.col, op.length),
+          message: `Expected register for operand ${index + 1} of '${entry.name}', got '${op.text}'`,
+          severity: DiagnosticSeverity.Warning,
+          source: "flux-lsp",
+          code: DiagnosticCode.WRONG_OPERAND_TYPE,
+        });
+      }
     }
-    if (token.startsWith('0b') || token.startsWith('0B')) {
-        return parseInt(token.slice(2), 2);
+  }
+
+  // Validate immediate values
+  if (expectedType === "imm16") {
+    if (/^-?\d+$/.test(op.text)) {
+      const val = parseInt(op.text, 10);
+      if (val < -32768 || val > 65535) {
+        diagnostics.push({
+          range: tokenRange(op.line, op.col, op.length),
+          message: `Immediate value ${val} out of range for 16-bit: -32768 to 65535`,
+          severity: DiagnosticSeverity.Warning,
+          source: "flux-lsp",
+          code: DiagnosticCode.OPERAND_OUT_OF_RANGE,
+        });
+      }
+    } else if (/^0x[0-9A-Fa-f]+$/i.test(op.text)) {
+      const val = parseInt(op.text, 16);
+      if (val > 0xFFFF) {
+        diagnostics.push({
+          range: tokenRange(op.line, op.col, op.length),
+          message: `Immediate value 0x${val.toString(16).toUpperCase()} out of range for 16-bit`,
+          severity: DiagnosticSeverity.Warning,
+          source: "flux-lsp",
+          code: DiagnosticCode.OPERAND_OUT_OF_RANGE,
+        });
+      }
+    } else if (!/^[A-Za-z_]/.test(op.text)) {
+      // Not a number or label — invalid immediate
+      diagnostics.push({
+        range: tokenRange(op.line, op.col, op.length),
+        message: `Invalid immediate value: '${op.text}'`,
+        severity: DiagnosticSeverity.Error,
+        source: "flux-lsp",
+        code: DiagnosticCode.INVALID_IMMEDIATE,
+      });
     }
-    return parseInt(token, 10);
+  }
+
+  if (expectedType === "imm8") {
+    if (/^-?\d+$/.test(op.text)) {
+      const val = parseInt(op.text, 10);
+      if (val < -128 || val > 255) {
+        diagnostics.push({
+          range: tokenRange(op.line, op.col, op.length),
+          message: `Immediate value ${val} out of range for 8-bit: -128 to 255`,
+          severity: DiagnosticSeverity.Warning,
+          source: "flux-lsp",
+          code: DiagnosticCode.OPERAND_OUT_OF_RANGE,
+        });
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Label validation
+// ---------------------------------------------------------------------------
+
+function validateLabel(
+  node: LabelDefNode,
+  firstOccurrence: Map<string, LabelDefNode>,
+  diagnostics: Diagnostic[],
+): void {
+  const upper = node.name.text.toUpperCase();
+
+  if (firstOccurrence.has(upper)) {
+    // Duplicate label
+    diagnostics.push({
+      range: tokenRange(node.name.line, node.name.col, node.name.length),
+      message: `Duplicate label definition: '${node.name.text}' (first defined at line ${firstOccurrence.get(upper)!.line + 1})`,
+      severity: DiagnosticSeverity.Error,
+      source: "flux-lsp",
+      code: DiagnosticCode.DUPLICATE_LABEL,
+      relatedInformation: [
+        {
+          location: {
+            uri: "", // Will be filled by server
+            range: tokenRange(
+              firstOccurrence.get(upper)!.name.line,
+              firstOccurrence.get(upper)!.name.col,
+              firstOccurrence.get(upper)!.name.length,
+            ),
+          },
+          message: "First definition here",
+        },
+      ],
+    });
+  } else {
+    firstOccurrence.set(upper, node);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Directive validation
+// ---------------------------------------------------------------------------
+
+function validateDirective(node: DirectiveNode, diagnostics: Diagnostic[]): void {
+  const dirName = node.directive.text.toLowerCase();
+  const knownDirectives = [
+    ".byte", ".word", ".dword", ".org", ".text", ".data", ".bss",
+    ".align", ".global", ".extern", ".include", ".ascii", ".asciz",
+    ".space", ".fill", ".set", ".macro", ".endm",
+  ];
+
+  if (!knownDirectives.includes(dirName)) {
+    diagnostics.push({
+      range: tokenRange(node.directive.line, node.directive.col, node.directive.length),
+      message: `Unknown directive: '${node.directive.text}'`,
+      severity: DiagnosticSeverity.Error,
+      source: "flux-lsp",
+      code: DiagnosticCode.INVALID_DIRECTIVE,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Missing HALT check
+// ---------------------------------------------------------------------------
+
+function checkMissingHalt(result: ParseResult, diagnostics: Diagnostic[]): void {
+  // Only check .text sections
+  if (!result.sections.includes(".text")) return;
+
+  // Check if any instruction is HALT
+  let hasHalt = false;
+  let lastInstructionLine = 0;
+
+  for (const node of result.nodes) {
+    if (node.kind === "instruction") {
+      lastInstructionLine = node.line;
+      if (node.mnemonic.text.toUpperCase() === "HALT") {
+        hasHalt = true;
+        break;
+      }
+      // Also accept HCF as termination
+      if (node.mnemonic.text.toUpperCase() === "HCF") {
+        hasHalt = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasHalt && result.nodes.some(n => n.kind === "instruction")) {
+    diagnostics.push({
+      range: {
+        start: { line: lastInstructionLine, character: 0 },
+        end:   { line: lastInstructionLine, character: 80 },
+      },
+      message: "Missing HALT instruction: program should terminate with HALT",
+      severity: DiagnosticSeverity.Warning,
+      source: "flux-lsp",
+      code: DiagnosticCode.MISSING_HALT,
+      tags: [2], // Unnecessary
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzy mnemonic matching (Levenshtein-based)
+// ---------------------------------------------------------------------------
+
+function findSimilarMnemonic(input: string): string | null {
+  let bestMatch: string | null = null;
+  let bestDist = Infinity;
+
+  for (const name of opcodeByName.keys()) {
+    if (Math.abs(name.length - input.length) > 2) continue;
+    const dist = levenshtein(input, name);
+    if (dist < bestDist && dist <= 2) {
+      bestDist = dist;
+      bestMatch = name;
+    }
+  }
+
+  return bestMatch;
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  return dp[m][n];
 }

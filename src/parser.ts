@@ -1,385 +1,571 @@
 /**
- * FLUX Assembly Parser
+ * parser.ts — .fluxasm tokenizer, parser, and AST representation
  *
- * Parses FLUX assembly source into structured ParsedLine objects.
- * Handles labels, opcodes, directives, comments, and empty lines.
- * Extracts label definitions and references for symbol resolution.
- *
- * Grammar reference: docs/grammar-spec.md Section 6
+ * Parses FLUX assembly source text into a structured AST with error recovery.
+ * Supports incremental re-parsing for LSP document synchronization.
  */
 
-import { Position, Range } from 'vscode-languageserver';
-import { lookupOpcode } from './opcode-database';
+import { opcodeByName, registerByName, directiveByName } from "./opcode_db";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Token Types
+// ---------------------------------------------------------------------------
 
-export type ParsedLineType = 'label' | 'opcode' | 'directive' | 'comment' | 'empty' | 'section' | 'directive_comment';
-
-export interface ParsedLine {
-    type: ParsedLineType;
-    label?: string;           // label name without @ or :
-    mnemonic?: string;        // opcode mnemonic (uppercased)
-    operands?: string[];      // raw operand strings
-    directive?: string;       // directive name (e.g., .text)
-    comment?: string;         // comment text without ;
-    lineNumber: number;       // 0-based line number
-    lineText: string;         // original line text
-    /** Column range of the mnemonic/token (for diagnostics) */
-    mnemonicRange?: Range;
-    /** Column range of the operands */
-    operandRanges?: Range[];
+export enum TokenType {
+  /** Instruction mnemonic (e.g. MOV, IADD) */
+  Mnemonic,
+  /** Register name (e.g. R0, F3, V15) */
+  Register,
+  /** Label definition (e.g. loop:) */
+  LabelDef,
+  /** Label reference (e.g. jump target) */
+  LabelRef,
+  /** Directive (e.g. .text, .byte) */
+  Directive,
+  /** Numeric immediate (decimal, hex 0x.., binary 0b..) */
+  Immediate,
+  /** Comma separator */
+  Comma,
+  /** Colon separator */
+  Colon,
+  /** Comment (; ...) */
+  Comment,
+  /** Whitespace */
+  Whitespace,
+  /** Unknown / error token */
+  Unknown,
+  /** End of line */
+  EOL,
 }
 
-export interface LabelInfo {
-    name: string;
-    line: number;           // 0-based
-    position: Position;
+export interface Token {
+  type: TokenType;
+  text: string;
+  /** 0-based line number */
+  line: number;
+  /** 0-based character offset within line */
+  col: number;
+  /** 0-based absolute offset in document */
+  offset: number;
+  /** Length of token text */
+  length: number;
 }
 
-export interface SectionInfo {
-    type: 'fn' | 'agent' | 'tile' | 'region' | 'vocabulary' | 'test';
-    name: string;
-    line: number;
-    position: Position;
-    signature?: string;
+// ---------------------------------------------------------------------------
+// AST Node Types
+// ---------------------------------------------------------------------------
+
+export type ASTNode =
+  | InstructionNode
+  | LabelDefNode
+  | DirectiveNode
+  | SectionNode
+  | CommentNode
+  | ErrorNode;
+
+export interface InstructionNode {
+  kind: "instruction";
+  /** Mnemonic token */
+  mnemonic: Token;
+  /** Operand tokens (registers, immediates, labels) */
+  operands: Token[];
+  /** Inline comment if present */
+  comment?: Token;
+  /** 0-based line number */
+  line: number;
 }
 
-// ─── Regex Patterns ──────────────────────────────────────────────────────────
-
-// Label definition: @name:
-const LABEL_RE = /^(@[a-zA-Z_]\w*)\s*:/;
-
-// Section heading: ## fn: name, ## agent: name, etc.
-const SECTION_RE = /^##\s+(fn|agent|tile|region|vocabulary|test)\s*:\s*(.*)/;
-
-// Directive comment: #!keyword value
-const DIRECTIVE_COMMENT_RE = /^(#!\w+)\s*(.*)/;
-
-// Standalone comment: ; ...
-const COMMENT_RE = /^\s*;\s*(.*)/;
-
-// Hash comment: # ... (but not #!)
-const HASH_COMMENT_RE = /^\s*#\s+(.*)/;
-
-// Directive: .text, .data, .global, etc.
-const DIRECTIVE_RE = /^(\.[a-zA-Z_]\w*)\s*(.*)/;
-
-// Opcode line: MNEMONIC operands ; comment
-// Opcode must be uppercase letters/digits/underscores, at least 2 chars
-const OPCODE_RE = /^([A-Z][A-Z0-9_]*)\s*(.*?)(?:\s*;\s*(.*))?$/;
-
-// Label prefix on opcode line: @label: MNEMONIC ...
-const LABEL_OPCODE_RE = /^(@[a-zA-Z_]\w*)\s*:\s*([A-Z][A-Z0-9_]*)\s*(.*?)(?:\s*;\s*(.*))?$/;
-
-// ─── Parser ──────────────────────────────────────────────────────────────────
-
-/**
- * Parse a single line of FLUX assembly.
- */
-function parseLine(lineText: string, lineNumber: number): ParsedLine {
-    const trimmed = lineText.trim();
-
-    // Empty line
-    if (trimmed === '') {
-        return { type: 'empty', lineNumber, lineText };
-    }
-
-    // Section heading (## fn:, ## agent:, etc.)
-    const sectionMatch = SECTION_RE.exec(trimmed);
-    if (sectionMatch) {
-        return {
-            type: 'section',
-            lineNumber,
-            lineText,
-            directive: sectionMatch[1], // section type
-            label: sectionMatch[2].trim(),
-        };
-    }
-
-    // Directive comment (#!capability, #!import, etc.)
-    const dirCommentMatch = DIRECTIVE_COMMENT_RE.exec(trimmed);
-    if (dirCommentMatch) {
-        return {
-            type: 'directive_comment',
-            lineNumber,
-            lineText,
-            directive: dirCommentMatch[1],
-            label: dirCommentMatch[2].trim(),
-        };
-    }
-
-    // Semicolon comment
-    const commentMatch = COMMENT_RE.exec(trimmed);
-    if (commentMatch) {
-        return {
-            type: 'comment',
-            lineNumber,
-            lineText,
-            comment: commentMatch[1],
-        };
-    }
-
-    // Hash comment (not #!)
-    const hashCommentMatch = HASH_COMMENT_RE.exec(trimmed);
-    if (hashCommentMatch) {
-        return {
-            type: 'comment',
-            lineNumber,
-            lineText,
-            comment: hashCommentMatch[1],
-        };
-    }
-
-    // Assembler directive (.text, .global, .word, etc.)
-    const directiveMatch = DIRECTIVE_RE.exec(trimmed);
-    if (directiveMatch) {
-        const operandsStr = directiveMatch[2].trim();
-        const operands = operandsStr ? operandsStr.split(/\s*,\s*/) : [];
-        return {
-            type: 'directive',
-            lineNumber,
-            lineText,
-            directive: directiveMatch[1],
-            operands,
-        };
-    }
-
-    // Label + opcode line: @label: MNEMONIC operands ; comment
-    const labelOpcodeMatch = LABEL_OPCODE_RE.exec(trimmed);
-    if (labelOpcodeMatch) {
-        const labelName = labelOpcodeMatch[1].slice(1); // remove @
-        const mnemonic = labelOpcodeMatch[2];
-        const operandsStr = labelOpcodeMatch[3].trim();
-        const comment = labelOpcodeMatch[4];
-        const operands = operandsStr ? splitOperands(operandsStr) : [];
-
-        // Calculate ranges within the line
-        const mnemonicStart = lineText.indexOf(mnemonic);
-        const mnemonicEnd = mnemonicStart + mnemonic.length;
-
-        return {
-            type: 'opcode',
-            lineNumber,
-            lineText,
-            label: labelName,
-            mnemonic,
-            operands,
-            comment: comment || undefined,
-            mnemonicRange: {
-                start: { line: lineNumber, character: mnemonicStart },
-                end: { line: lineNumber, character: mnemonicEnd },
-            },
-        };
-    }
-
-    // Standalone label: @label:
-    const labelMatch = LABEL_RE.exec(trimmed);
-    if (labelMatch) {
-        return {
-            type: 'label',
-            lineNumber,
-            lineText,
-            label: labelMatch[1].slice(1), // remove @
-        };
-    }
-
-    // Opcode line: MNEMONIC operands ; comment
-    const opcodeMatch = OPCODE_RE.exec(trimmed);
-    if (opcodeMatch) {
-        const mnemonic = opcodeMatch[1];
-        const operandsStr = opcodeMatch[2].trim();
-        const comment = opcodeMatch[3];
-        const operands = operandsStr ? splitOperands(operandsStr) : [];
-
-        const mnemonicStart = lineText.indexOf(mnemonic);
-        const mnemonicEnd = mnemonicStart + mnemonic.length;
-
-        return {
-            type: 'opcode',
-            lineNumber,
-            lineText,
-            mnemonic,
-            operands,
-            comment: comment || undefined,
-            mnemonicRange: {
-                start: { line: lineNumber, character: mnemonicStart },
-                end: { line: lineNumber, character: mnemonicEnd },
-            },
-        };
-    }
-
-    // Fallback: treat as unknown/empty
-    return { type: 'empty', lineNumber, lineText };
+export interface LabelDefNode {
+  kind: "label";
+  /** Label name (without colon) */
+  name: Token;
+  /** Colon token */
+  colon: Token;
+  /** 0-based line number */
+  line: number;
 }
 
-/**
- * Split operand string by commas, respecting parentheses and strings.
- */
-function splitOperands(operandsStr: string): string[] {
-    const result: string[] = [];
-    let current = '';
-    let depth = 0;
-    let inString = false;
+export interface DirectiveNode {
+  kind: "directive";
+  /** Directive token (e.g. .byte) */
+  directive: Token;
+  /** Arguments after directive */
+  args: Token[];
+  /** 0-based line number */
+  line: number;
+}
 
-    for (let i = 0; i < operandsStr.length; i++) {
-        const ch = operandsStr[i];
+export interface SectionNode {
+  kind: "section";
+  /** Section directive token */
+  directive: Token;
+  /** Section name (.text or .data etc.) */
+  sectionName: string;
+  /** 0-based line number */
+  line: number;
+}
 
-        if (ch === '"' && (i === 0 || operandsStr[i - 1] !== '\\')) {
-            inString = !inString;
-            current += ch;
-        } else if (inString) {
-            current += ch;
-        } else if (ch === '(' || ch === '[') {
-            depth++;
-            current += ch;
-        } else if (ch === ')' || ch === ']') {
-            depth--;
-            current += ch;
-        } else if (ch === ',' && depth === 0) {
-            const trimmed = current.trim();
-            if (trimmed) result.push(trimmed);
-            current = '';
-        } else {
-            current += ch;
+export interface CommentNode {
+  kind: "comment";
+  /** Comment token */
+  comment: Token;
+  /** 0-based line number */
+  line: number;
+}
+
+export interface ErrorNode {
+  kind: "error";
+  /** The token that caused the error */
+  token: Token;
+  /** Error message */
+  message: string;
+  /** 0-based line number */
+  line: number;
+}
+
+// ---------------------------------------------------------------------------
+// Parse Result
+// ---------------------------------------------------------------------------
+
+export interface ParseResult {
+  /** All AST nodes in document order */
+  nodes: ASTNode[];
+  /** All tokens in document order */
+  tokens: Token[];
+  /** Label definitions: name → node */
+  labels: Map<string, LabelDefNode>;
+  /** Label references: name → referencing nodes */
+  labelRefs: Map<string, InstructionNode[]>;
+  /** Section names found */
+  sections: string[];
+  /** Opcodes used in document */
+  usedOpcodes: Set<string>;
+  /** Line → list of nodes on that line */
+  lines: Map<number, ASTNode[]>;
+  /** Total line count */
+  lineCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Tokenizer
+// ---------------------------------------------------------------------------
+
+const RE_MNEMONIC = /^[A-Z][A-Z0-9_]*$/i;
+const RE_REGISTER = /^[RFV]\d+$/i;
+const RE_LABEL_DEF = /^\.?[A-Za-z_][A-Za-z0-9_]*:$/;
+const RE_LABEL_REF = /^\.?[A-Za-z_][A-Za-z0-9_]*$/;
+const RE_IMMEDIATE = /^(0x[0-9A-Fa-f]+|0b[01]+|-?\d+)$/;
+
+export function tokenizeLine(line: string, lineNum: number, lineOffset: number): Token[] {
+  const tokens: Token[] = [];
+  let pos = 0;
+  const len = line.length;
+
+  while (pos < len) {
+    const ch = line[pos];
+
+    // Whitespace
+    if (ch === " " || ch === "\t") {
+      const start = pos;
+      while (pos < len && (line[pos] === " " || line[pos] === "\t")) pos++;
+      tokens.push({
+        type: TokenType.Whitespace,
+        text: line.slice(start, pos),
+        line: lineNum,
+        col: start,
+        offset: lineOffset + start,
+        length: pos - start,
+      });
+      continue;
+    }
+
+    // Comment
+    if (ch === ";") {
+      tokens.push({
+        type: TokenType.Comment,
+        text: line.slice(pos),
+        line: lineNum,
+        col: pos,
+        offset: lineOffset + pos,
+        length: len - pos,
+      });
+      pos = len;
+      continue;
+    }
+
+    // Comma
+    if (ch === ",") {
+      tokens.push({ type: TokenType.Comma, text: ",", line: lineNum, col: pos, offset: lineOffset + pos, length: 1 });
+      pos++;
+      continue;
+    }
+
+    // Colon
+    if (ch === ":") {
+      tokens.push({ type: TokenType.Colon, text: ":", line: lineNum, col: pos, offset: lineOffset + pos, length: 1 });
+      pos++;
+      continue;
+    }
+
+    // Directive (starts with .)
+    if (ch === ".") {
+      const start = pos;
+      while (pos < len && /[A-Za-z0-9_]/.test(line[pos])) pos++;
+      const text = line.slice(start, pos);
+      tokens.push({
+        type: TokenType.Directive,
+        text,
+        line: lineNum,
+        col: start,
+        offset: lineOffset + start,
+        length: pos - start,
+      });
+      continue;
+    }
+
+    // Word (mnemonic, register, label, immediate)
+    if (/[A-Za-z0-9_\-#]/.test(ch)) {
+      const start = pos;
+      if (ch === "#" || ch === "-") pos++; // allow #prefix and -negative
+      while (pos < len && /[A-Za-z0-9_]/.test(line[pos])) pos++;
+      const text = line.slice(start, pos);
+
+      // Classify the word token
+      let type: TokenType;
+      const upper = text.toUpperCase();
+
+      if (opcodeByName.has(upper)) {
+        type = TokenType.Mnemonic;
+      } else if (RE_REGISTER.test(upper) && registerByName.has(upper)) {
+        type = TokenType.Register;
+      } else if (text.endsWith(":") || (RE_LABEL_DEF.test(text))) {
+        type = TokenType.LabelDef;
+      } else if (RE_IMMEDIATE.test(text)) {
+        type = TokenType.Immediate;
+      } else if (RE_LABEL_REF.test(text)) {
+        type = TokenType.LabelRef;
+      } else if (RE_REGISTER.test(upper)) {
+        // Looks like a register but invalid index (e.g. R16, F20)
+        type = TokenType.Register;
+      } else {
+        type = TokenType.Unknown;
+      }
+
+      tokens.push({
+        type,
+        text,
+        line: lineNum,
+        col: start,
+        offset: lineOffset + start,
+        length: pos - start,
+      });
+      continue;
+    }
+
+    // Unknown character
+    tokens.push({
+      type: TokenType.Unknown,
+      text: ch,
+      line: lineNum,
+      col: pos,
+      offset: lineOffset + pos,
+      length: 1,
+    });
+    pos++;
+  }
+
+  return tokens;
+}
+
+// ---------------------------------------------------------------------------
+// Parser
+// ---------------------------------------------------------------------------
+
+export function parse(text: string): ParseResult {
+  const lines = text.split("\n");
+  const nodes: ASTNode[] = [];
+  const allTokens: Token[] = [];
+  const labels = new Map<string, LabelDefNode>();
+  const labelRefs = new Map<string, InstructionNode[]>();
+  const sections: string[] = [];
+  const usedOpcodes = new Set<string>();
+  const lineMap = new Map<number, ASTNode[]>();
+  let lineOffset = 0;
+
+  for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+    const rawLine = lines[lineNum];
+    const tokens = tokenizeLine(rawLine, lineNum, lineOffset);
+    allTokens.push(...tokens);
+
+    // Filter out whitespace for parsing
+    const meaningful = tokens.filter(
+      t => t.type !== TokenType.Whitespace && t.type !== TokenType.EOL
+    );
+
+    if (meaningful.length === 0) {
+      lineOffset += rawLine.length + 1; // +1 for \n
+      continue;
+    }
+
+    // Check for comment-only line
+    if (meaningful.length === 1 && meaningful[0].type === TokenType.Comment) {
+      const node: CommentNode = {
+        kind: "comment",
+        comment: meaningful[0],
+        line: lineNum,
+      };
+      nodes.push(node);
+      addLineNode(lineMap, lineNum, node);
+      lineOffset += rawLine.length + 1;
+      continue;
+    }
+
+    // Split meaningful tokens into parts separated by comment
+    let commentToken: Token | undefined;
+    const beforeComment: Token[] = [];
+    let foundComment = false;
+    for (const t of meaningful) {
+      if (t.type === TokenType.Comment) {
+        commentToken = t;
+        foundComment = true;
+      } else if (!foundComment) {
+        beforeComment.push(t);
+      }
+    }
+
+    // Check if this is a label definition
+    // Pattern: LabelDef token, or identifier followed by Colon
+    let labelDefHandled = false;
+
+    if (beforeComment.length >= 2) {
+      const first = beforeComment[0];
+      const second = beforeComment[1];
+      if (first.type === TokenType.LabelDef) {
+        // Label defined with colon attached (e.g. "loop:")
+        const nameText = first.text.replace(/:$/, "");
+        const node: LabelDefNode = {
+          kind: "label",
+          name: { ...first, text: nameText },
+          colon: { type: TokenType.Colon, text: ":", line: first.line, col: first.col + first.text.length - 1, offset: first.offset + first.text.length - 1, length: 1 },
+          line: lineNum,
+        };
+        nodes.push(node);
+        labels.set(nameText.toUpperCase(), node);
+        addLineNode(lineMap, lineNum, node);
+        labelDefHandled = true;
+
+        // Parse remaining tokens on same line as instruction
+        const remaining = beforeComment.slice(1);
+        if (remaining.length > 0) {
+          parseInstructionOrDirective(remaining, lineNum, commentToken, nodes, labelRefs, usedOpcodes, lineMap, sections);
         }
-    }
+      } else if (first.type === TokenType.Unknown && second.type === TokenType.Colon) {
+        // Label defined as "name :" with separate colon
+        const node: LabelDefNode = {
+          kind: "label",
+          name: first,
+          colon: second,
+          line: lineNum,
+        };
+        nodes.push(node);
+        labels.set(first.text.toUpperCase(), node);
+        addLineNode(lineMap, lineNum, node);
+        labelDefHandled = true;
 
-    const trimmed = current.trim();
-    if (trimmed) result.push(trimmed);
-    return result;
-}
-
-/**
- * Parse FLUX assembly source into an array of ParsedLine objects.
- */
-export function parseFluxAssembly(source: string): ParsedLine[] {
-    const lines = source.split('\n');
-    return lines.map((line, index) => parseLine(line, index));
-}
-
-/**
- * Extract all label definitions from parsed lines.
- * Returns a map of label name -> 0-based line number.
- */
-export function extractLabels(lines: ParsedLine[]): Map<string, number> {
-    const labels = new Map<string, number>();
-    for (const line of lines) {
-        if (line.label && (line.type === 'label' || line.type === 'opcode')) {
-            labels.set(line.label, line.lineNumber);
+        const remaining = beforeComment.slice(2);
+        if (remaining.length > 0) {
+          parseInstructionOrDirective(remaining, lineNum, commentToken, nodes, labelRefs, usedOpcodes, lineMap, sections);
         }
-    }
-    return labels;
-}
-
-/**
- * Extract all label definitions with position info.
- */
-export function extractLabelInfos(lines: ParsedLine[]): LabelInfo[] {
-    const infos: LabelInfo[] = [];
-    for (const line of lines) {
-        if (line.label && (line.type === 'label' || line.type === 'opcode')) {
-            infos.push({
-                name: line.label,
-                line: line.lineNumber,
-                position: { line: line.lineNumber, character: 0 },
-            });
-        }
-    }
-    return infos;
-}
-
-/**
- * Extract all section definitions (## fn:, ## agent:, etc.).
- */
-export function extractSections(lines: ParsedLine[]): SectionInfo[] {
-    const sections: SectionInfo[] = [];
-    for (const line of lines) {
-        if (line.type === 'section') {
-            sections.push({
-                type: line.directive as SectionInfo['type'],
-                name: line.label || '',
-                line: line.lineNumber,
-                position: { line: line.lineNumber, character: 0 },
-                signature: line.label || undefined,
-            });
-        }
-    }
-    return sections;
-}
-
-/**
- * Find all label references in operand positions.
- * A label reference is @name in any operand.
- */
-export function extractLabelReferences(lines: ParsedLine[]): { name: string; line: number; col: number }[] {
-    const refs: { name: string; line: number; col: number }[] = [];
-    for (const line of lines) {
-        if (!line.operands) continue;
-        for (const op of line.operands) {
-            const labelRefMatch = op.match(/^@(\w+)$/);
-            if (labelRefMatch) {
-                const col = line.lineText.indexOf(op);
-                refs.push({ name: labelRefMatch[1], line: line.lineNumber, col });
-            }
-        }
-    }
-    return refs;
-}
-
-/**
- * Validate that operands match the expected format for an opcode.
- * Returns null if valid, or a string describing the issue.
- */
-export function validateOperandCount(mnemonic: string, operandCount: number): string | null {
-    const info = lookupOpcode(mnemonic);
-    if (!info) return null; // unknown mnemonic handled elsewhere
-
-    const expectedCount = info.operands.filter(o => o.role !== '-').length;
-    // Some opcodes accept a dash for unused operand
-    if (operandCount === expectedCount || operandCount === info.operands.length) {
-        return null;
+      }
+    } else if (beforeComment.length === 1 && beforeComment[0].type === TokenType.LabelDef) {
+      // Label only line
+      const first = beforeComment[0];
+      const nameText = first.text.replace(/:$/, "");
+      const node: LabelDefNode = {
+        kind: "label",
+        name: { ...first, text: nameText },
+        colon: { type: TokenType.Colon, text: ":", line: first.line, col: first.col + first.text.length - 1, offset: first.offset + first.text.length - 1, length: 1 },
+        line: lineNum,
+      };
+      nodes.push(node);
+      labels.set(nameText.toUpperCase(), node);
+      addLineNode(lineMap, lineNum, node);
+      labelDefHandled = true;
     }
 
-    // Special: JMP can have just a label reference (parsed as 1 operand)
-    // MOVI and friends can have just a register (missing imm — might be on next line)
-    // Allow some flexibility for common patterns
-    const hasUnused = info.operands.some(o => o.role === '-');
-    if (operandCount === expectedCount - 1 && hasUnused) {
-        return null; // Missing unused operand is fine
+    if (!labelDefHandled && beforeComment.length > 0) {
+      parseInstructionOrDirective(beforeComment, lineNum, commentToken, nodes, labelRefs, usedOpcodes, lineMap, sections);
     }
 
-    return `Expected ${expectedCount} operand(s) for ${mnemonic}, got ${operandCount}`;
+    // Add comment node if standalone
+    if (commentToken && beforeComment.length === 0) {
+      const node: CommentNode = { kind: "comment", comment: commentToken, line: lineNum };
+      nodes.push(node);
+      addLineNode(lineMap, lineNum, node);
+    }
+
+    lineOffset += rawLine.length + 1;
+  }
+
+  return {
+    nodes,
+    tokens: allTokens,
+    labels,
+    labelRefs,
+    sections,
+    usedOpcodes,
+    lines: lineMap,
+    lineCount: lines.length,
+  };
 }
 
-/**
- * Check if a string looks like a valid register reference.
- */
-export function isRegister(token: string): boolean {
-    // GP: R0-R15
-    if (/^R(1[0-5]|[0-9])$/.test(token)) return true;
-    // FP: F0-F15
-    if (/^F(1[0-5]|[0-9])$/.test(token)) return true;
-    // VEC: V0-V15
-    if (/^V(1[0-5]|[0-9])$/.test(token)) return true;
-    // Special
-    if (/^(SP|FP|LR|PC|FLAGS)$/.test(token)) return true;
-    return false;
+function parseInstructionOrDirective(
+  tokens: Token[],
+  lineNum: number,
+  comment: Token | undefined,
+  nodes: ASTNode[],
+  labelRefs: Map<string, InstructionNode[]>,
+  usedOpcodes: Set<string>,
+  lineMap: Map<number, ASTNode[]>,
+  sections: string[],
+): void {
+  const first = tokens[0];
+
+  // Directive?
+  if (first.type === TokenType.Directive) {
+    const dirName = first.text.toLowerCase();
+
+    // Section directive?
+    if (dirName === ".text" || dirName === ".data" || dirName === ".bss") {
+      const node: SectionNode = {
+        kind: "section",
+        directive: first,
+        sectionName: dirName,
+        line: lineNum,
+      };
+      nodes.push(node);
+      addLineNode(lineMap, lineNum, node);
+      if (!sections.includes(dirName)) sections.push(dirName);
+      return;
+    }
+
+    const args = tokens.slice(1).filter(t => t.type !== TokenType.Comma);
+    const node: DirectiveNode = {
+      kind: "directive",
+      directive: first,
+      args,
+      line: lineNum,
+    };
+    nodes.push(node);
+    addLineNode(lineMap, lineNum, node);
+    return;
+  }
+
+  // Instruction
+  if (first.type === TokenType.Mnemonic || first.type === TokenType.Unknown) {
+    const operands: Token[] = [];
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.type === TokenType.Comma) continue;
+      if (t.type === TokenType.Comment) break;
+      operands.push(t);
+
+      // Track label references
+      if (t.type === TokenType.LabelRef || (t.type === TokenType.Unknown && /^[A-Za-z_]/.test(t.text))) {
+        // Could be a label reference used as jump target
+      }
+    }
+
+    const node: InstructionNode = {
+      kind: "instruction",
+      mnemonic: first,
+      operands,
+      comment,
+      line: lineNum,
+    };
+    nodes.push(node);
+    addLineNode(lineMap, lineNum, node);
+
+    // Track opcode usage
+    if (first.type === TokenType.Mnemonic) {
+      usedOpcodes.add(first.text.toUpperCase());
+    }
+
+    // Track label references in operands
+    for (const op of operands) {
+      if (op.type === TokenType.LabelRef || (op.type === TokenType.Unknown && /^[A-Za-z_]/.test(op.text))) {
+        const refName = op.text.toUpperCase();
+        const refs = labelRefs.get(refName) ?? [];
+        refs.push(node);
+        labelRefs.set(refName, refs);
+      }
+    }
+
+    return;
+  }
+
+  // Fallback: error node
+  const node: ErrorNode = {
+    kind: "error",
+    token: first,
+    message: `Unexpected token: ${first.text}`,
+    line: lineNum,
+  };
+  nodes.push(node);
+  addLineNode(lineMap, lineNum, node);
 }
 
-/**
- * Check if a string looks like a valid immediate value.
- */
-export function isImmediate(token: string): boolean {
-    if (/^[+-]?\d+$/.test(token)) return true;   // decimal
-    if (/^0[xX][0-9a-fA-F]+$/.test(token)) return true;  // hex
-    if (/^0[bB][01]+$/.test(token)) return true;   // binary
-    if (/^-[1-9]\d*$/.test(token)) return true;    // negative decimal
-    return false;
+function addLineNode(lineMap: Map<number, ASTNode[]>, line: number, node: ASTNode): void {
+  const list = lineMap.get(line) ?? [];
+  list.push(node);
+  lineMap.set(line, list);
 }
 
-/**
- * Check if a string is a label reference (@name).
- */
-export function isLabelRef(token: string): boolean {
-    return /^@\w+$/.test(token);
+// ---------------------------------------------------------------------------
+// Position helpers
+// ---------------------------------------------------------------------------
+
+/** Convert 0-based line/col to absolute offset in text */
+export function lineColToOffset(text: string, line: number, col: number): number {
+  const lines = text.split("\n");
+  let offset = 0;
+  for (let i = 0; i < line && i < lines.length; i++) {
+    offset += lines[i].length + 1; // +1 for \n
+  }
+  return offset + col;
+}
+
+/** Find the token at a given position (0-based line, 0-based character) */
+export function getTokenAtPosition(tokens: Token[], line: number, col: number): Token | undefined {
+  for (const t of tokens) {
+    if (t.type === TokenType.Whitespace || t.type === TokenType.EOL) continue;
+    if (t.line === line && col >= t.col && col < t.col + t.length) {
+      return t;
+    }
+  }
+  // Fallback: check for col at end of token (cursor right after)
+  for (const t of tokens) {
+    if (t.type === TokenType.Whitespace || t.type === TokenType.EOL) continue;
+    if (t.line === line && col === t.col + t.length) {
+      return t;
+    }
+  }
+  return undefined;
+}
+
+/** Get the word at position, expanding beyond single token for compound identifiers */
+export function getWordAtPosition(text: string, line: number, col: number): string | undefined {
+  const lines = text.split("\n");
+  if (line >= lines.length) return undefined;
+  const lineText = lines[line];
+  if (col >= lineText.length) return undefined;
+
+  // Find word boundaries
+  let start = col;
+  let end = col;
+  while (start > 0 && /[A-Za-z0-9_]/.test(lineText[start - 1])) start--;
+  while (end < lineText.length && /[A-Za-z0-9_]/.test(lineText[end])) end++;
+
+  if (start === end) return undefined;
+  return lineText.slice(start, end);
 }
